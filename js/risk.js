@@ -46,41 +46,55 @@ export function computePositionSize(entryPrice, stopLoss, settings = DEFAULT_RIS
   };
 }
 
-/** Full recalculation used both at signal-generation time and whenever the user edits the actual entry. */
+/**
+ * Full recalculation used both at signal-generation time and whenever the user edits the actual entry.
+ * If the raw take-profit implies an R:R beyond the configured maximum, the take-profit is PULLED IN
+ * (not just flagged) so the trade's actual numbers never exceed your max R:R setting — e.g. a structural
+ * target 7.5R away gets capped to a nearer price that yields exactly your maxRR (default 1:3).
+ */
 export function recalculateTrade({ direction, entryPrice, stopLoss, takeProfit, settings = DEFAULT_RISK_SETTINGS, minRR = 1.5 }) {
   const sizing = computePositionSize(entryPrice, stopLoss, settings);
   if (!sizing.valid) return { valid: false, reason: sizing.reason };
 
-  const reward = Math.abs(takeProfit - entryPrice);
-  const rr = reward / sizing.perUnitRisk;
-
   // Directional sanity: stop must be on the correct side of entry, target on the other.
   const directionOk =
     direction === "long" ? stopLoss < entryPrice && takeProfit > entryPrice : stopLoss > entryPrice && takeProfit < entryPrice;
-
   if (!directionOk) {
     return { valid: false, reason: "Stop-loss / take-profit are not on the correct side of the entry for this direction." };
   }
+
+  const rawReward = Math.abs(takeProfit - entryPrice);
+  const rawRR = rawReward / sizing.perUnitRisk;
+
+  let finalTakeProfit = takeProfit;
+  let reward = rawReward;
+  let rr = rawRR;
+  let capped = false;
+  let structuralTarget = null;
+
+  if (rawRR > settings.maxRR) {
+    // Pull the target in to whatever price yields exactly maxRR, rather than
+    // displaying/using an inflated R:R the risk settings say is too far.
+    capped = true;
+    structuralTarget = takeProfit;
+    reward = sizing.perUnitRisk * settings.maxRR;
+    finalTakeProfit = direction === "long" ? entryPrice + reward : entryPrice - reward;
+    rr = settings.maxRR;
+  }
+
   if (rr < minRR) {
     return { valid: false, reason: `Resulting R:R (${rr.toFixed(2)}:1) is below the strategy's minimum (${minRR}:1). Trade rejected.` };
-  }
-  if (rr > settings.maxRR) {
-    // Not rejected — but flagged, since target may be unrealistic beyond the configured ceiling.
-    return {
-      valid: true,
-      capped: true,
-      note: `R:R (${rr.toFixed(2)}:1) exceeds the configured maximum (${settings.maxRR}:1). Consider tightening the target.`,
-      ...sizing,
-      rr,
-      reward,
-      potentialReward: sizing.dollarRisk * rr,
-    };
   }
 
   return {
     valid: true,
-    capped: false,
+    capped,
+    structuralTarget, // the original, farther structural target, kept for transparency — null if not capped
+    note: capped
+      ? `Target capped to hold R:R at your ${settings.maxRR}:1 maximum (structure suggested a farther target at ${structuralTarget.toFixed(4)}).`
+      : null,
     ...sizing,
+    takeProfit: finalTakeProfit,
     rr,
     reward,
     potentialReward: sizing.dollarRisk * rr,

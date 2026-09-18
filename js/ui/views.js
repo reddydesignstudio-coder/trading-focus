@@ -13,6 +13,7 @@ import { runBacktest } from "../backtest.js";
 import { getMarketData } from "../dataProviders/index.js";
 import { strategiesForMarket, ALL_STRATEGIES } from "../strategies/index.js";
 import { exportJSON, exportTradesCSV, importFromJSON, downloadBlob } from "../exportImport.js";
+import { saveSettings } from "../settings.js";
 import { fmtUSD, fmtPct, todayKey } from "../utils.js";
 
 // -------------------------------------------------------------- HOME
@@ -149,6 +150,57 @@ function scanLegend() {
   return details;
 }
 
+const BEST_TIME_TIPS = {
+  us_stocks: "Best window: the first hour after open and the last hour before close tend to see the most volume and volatility. Midday is typically quieter and choppier.",
+  forex: "Best window: the London/New York overlap is typically the highest-liquidity stretch for major pairs — that's the New York countdown tracked above.",
+  crypto: "Crypto trades 24/7. Liquidity and volatility are typically highest during the US/EU trading-hours overlap, and quieter during the late-night/early-morning Asia-Pacific hours.",
+};
+
+function renderMarketStatusCard(container, market, state) {
+  container.innerHTML = "";
+  const tz = state.effectiveTimeZone();
+  const card = el("div", { class: "card market-status-card" });
+  container.appendChild(card);
+
+  if (state.scanIntervalId) {
+    clearInterval(state.scanIntervalId);
+    state.scanIntervalId = null;
+  }
+
+  if (market === "crypto") {
+    card.appendChild(el("div", { class: "market-status-row" }, [el("span", { class: "market-status-badge is-active" }, "OPEN 24/7")]));
+    card.appendChild(el("p", { class: "market-status-tip" }, BEST_TIME_TIPS.crypto));
+    return;
+  }
+
+  const sessionId = market === "us_stocks" ? "us_regular" : "newyork_fx";
+  let cached = computeKeySessionCountdowns(new Date(), tz).find((k) => k.id === sessionId);
+  const refresh = () => {
+    cached = computeKeySessionCountdowns(new Date(), tz).find((k) => k.id === sessionId);
+  };
+
+  const tick = () => {
+    const now = new Date();
+    let ms = cached.targetAt ? cached.targetAt - now : null;
+    if (ms !== null && ms < 0) {
+      refresh();
+      ms = cached.targetAt ? cached.targetAt - now : null;
+    }
+    card.innerHTML = "";
+    card.appendChild(
+      el("div", { class: "market-status-row" }, [
+        el("span", { class: `market-status-badge ${cached.active ? "is-active" : "is-inactive"}` }, cached.active ? "OPEN NOW" : "CLOSED"),
+        el("span", { class: "market-status-countdown" }, ms !== null ? `${cached.active ? "closes" : "opens"} in ${formatCountdownHMS(Math.max(0, ms))}` : "—"),
+      ])
+    );
+    card.appendChild(el("p", { class: "market-status-tip" }, BEST_TIME_TIPS[market]));
+  };
+  tick();
+  const id = setInterval(tick, 1000);
+  state.scanIntervalId = id;
+  state.registerInterval(id);
+}
+
 export async function renderScan(root, state) {
   root.innerHTML = "";
   const market = state.currentScanMarket || "us_stocks";
@@ -161,6 +213,10 @@ export async function renderScan(root, state) {
     )
   );
   root.appendChild(tabs);
+
+  const statusContainer = el("div", {});
+  root.appendChild(statusContainer);
+  renderMarketStatusCard(statusContainer, market, state);
 
   const modeRow = el("div", { class: "mode-row" }, [
     el("label", {}, [
@@ -322,12 +378,16 @@ function openTradeModal(signal, state) {
     }
     recalcOut.appendChild(
       el("div", { class: "recalc-grid" }, [
+        el("span", {}, `Take Profit: ${result.takeProfit.toFixed(4)}`),
         el("span", {}, `Position size: ${result.units.toFixed(4)}`),
         el("span", {}, `Risk: ${fmtUSD(result.dollarRisk)}`),
         el("span", {}, `Reward: ${fmtUSD(result.potentialReward)}`),
         el("span", {}, `R:R: 1:${result.rr.toFixed(2)}`),
       ])
     );
+    if (result.capped) {
+      recalcOut.appendChild(el("p", { class: "capped-note" }, result.note));
+    }
     return result;
   }
   entryInput.addEventListener("input", recalc);
@@ -414,9 +474,41 @@ export async function renderJournal(root, state) {
     root.appendChild(el("p", { class: "empty-state" }, "No trades yet. Run CHECK FOR TRADE and paper trade a signal to start your journal."));
     return;
   }
+
   const list = el("div", { class: "trade-list" });
   trades.forEach((t) => list.appendChild(tradeRow(t)));
   root.appendChild(list);
+
+  // Fetch current price for every OPEN trade's symbol (deduped by symbol+market) and
+  // fill in current price + unrealized P&L once it lands, without blocking the initial render.
+  const openTrades = trades.filter((t) => t.status === "OPEN");
+  if (!openTrades.length) return;
+
+  const rows = [...list.children];
+  const uniqueKeys = [...new Set(openTrades.map((t) => `${t.market}:${t.symbol}`))];
+  await Promise.all(
+    uniqueKeys.map(async (key) => {
+      const [market, symbol] = key.split(":");
+      let price = null;
+      try {
+        const timeframe = market === "us_stocks" ? "15m" : "1h";
+        const data = await getMarketData({ symbol, market, timeframe, limit: 2, apiKeys: state.settings.apiKeys, forceProviderId: state.settings.dataProviderOverride?.[market] });
+        price = data.candles?.[data.candles.length - 1]?.c ?? null;
+      } catch {
+        price = null;
+      }
+      if (price === null) return;
+      trades.forEach((t, idx) => {
+        if (t.status !== "OPEN" || `${t.market}:${t.symbol}` !== key) return;
+        const risk = Math.abs(t.entryPrice - t.stopLoss);
+        const priceDelta = t.direction === "long" ? price - t.entryPrice : t.entryPrice - price;
+        const live = { currentPrice: price, unrealizedPnl: priceDelta * t.positionSize, unrealizedR: risk > 0 ? priceDelta / risk : null };
+        const freshRow = tradeRow(t, live);
+        rows[idx].replaceWith(freshRow);
+        rows[idx] = freshRow;
+      });
+    })
+  );
 }
 
 // -------------------------------------------------------------- DAILY SUMMARY
@@ -660,6 +752,73 @@ export async function renderStrategyLab(root, state) {
 }
 
 // -------------------------------------------------------------- SETTINGS
+// -------------------------------------------------------------- WATCHLIST EDITOR (used inside Settings)
+function getWatchlist(state, market) {
+  return state.settings.watchlists?.[market] || [...DEFAULT_WATCHLISTS[market]];
+}
+
+async function updateWatchlist(state, market, newList) {
+  if (!state.settings.watchlists) state.settings.watchlists = {};
+  state.settings.watchlists[market] = newList;
+  await saveSettings(state.settings);
+}
+
+function renderWatchlistSection(container, state) {
+  container.innerHTML = "";
+  ["us_stocks", "forex", "crypto"].forEach((market) => {
+    const list = getWatchlist(state, market);
+    const card = el("div", { class: "card watchlist-card" });
+    card.appendChild(el("div", { class: "watchlist-market-label" }, labelForMarket(market)));
+
+    const chipsRow = el("div", { class: "watchlist-chips" });
+    list.forEach((symbol) => {
+      chipsRow.appendChild(
+        el("span", { class: "watchlist-chip" }, [
+          symbol,
+          el("button", {
+            class: "watchlist-remove",
+            "aria-label": `Remove ${symbol}`,
+            onclick: async () => {
+              if (list.length <= 1) {
+                alert("Keep at least 1 symbol in this watchlist — remove is disabled below that.");
+                return;
+              }
+              await updateWatchlist(state, market, list.filter((s) => s !== symbol));
+              renderWatchlistSection(container, state);
+            },
+          }, "✕"),
+        ])
+      );
+    });
+    card.appendChild(chipsRow);
+
+    const input = el("input", { class: "input watchlist-input", placeholder: market === "forex" ? "e.g. EURUSD" : market === "crypto" ? "e.g. BTCUSDT" : "e.g. AAPL", type: "text" });
+    const addRow = el("div", { class: "watchlist-add-row" }, [
+      input,
+      el("button", {
+        class: "btn btn-primary",
+        onclick: async () => {
+          const raw = input.value.trim().toUpperCase();
+          if (!raw) return;
+          if (raw.length > 12) {
+            alert("That doesn't look like a valid symbol.");
+            return;
+          }
+          if (list.includes(raw)) {
+            alert(`${raw} is already in this watchlist.`);
+            input.value = "";
+            return;
+          }
+          await updateWatchlist(state, market, [...list, raw]);
+          renderWatchlistSection(container, state);
+        },
+      }, "Add"),
+    ]);
+    card.appendChild(addRow);
+    container.appendChild(card);
+  });
+}
+
 export async function renderSettings(root, state) {
   root.innerHTML = "";
   const s = state.settings;
@@ -684,6 +843,12 @@ export async function renderSettings(root, state) {
   root.appendChild(
     el("a", { href: "https://twelvedata.com/pricing", target: "_blank", class: "link" }, "Get a free Twelve Data API key →")
   );
+
+  root.appendChild(el("div", { class: "section-title" }, "Watchlists"));
+  root.appendChild(el("p", { class: "focus-reason" }, "Add or remove the exact symbols CHECK FOR TRADE scans for each market. Changes save immediately."));
+  const watchlistContainer = el("div", {});
+  root.appendChild(watchlistContainer);
+  renderWatchlistSection(watchlistContainer, state);
 
   root.appendChild(el("div", { class: "section-title" }, "Test Mode Trades/Day"));
   const testModeSelect = el(

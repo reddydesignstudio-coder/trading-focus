@@ -89,7 +89,7 @@ export async function executeTrade({ signal, actualEntry, sizing, mode, timeZone
     idealEntry: signal.idealEntry,
     entryPrice: actualEntry,
     stopLoss: signal.stopLoss,
-    takeProfit: signal.takeProfit,
+    takeProfit: sizing.takeProfit ?? signal.takeProfit,
     rr: sizing.rr,
     positionSize: sizing.units,
     dollarRisk: sizing.dollarRisk,

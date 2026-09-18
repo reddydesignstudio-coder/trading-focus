@@ -168,6 +168,14 @@ body {
 .scan-legend-row strong { font-size: 11px; letter-spacing: 0.03em; }
 .scan-legend-row span { color: var(--text-dim); font-size: 11px; line-height: 1.4; }
 
+.market-status-card { padding: 12px 14px; }
+.market-status-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.market-status-badge { font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 999px; }
+.market-status-badge.is-active { background: rgba(77,157,111,0.18); color: var(--green); }
+.market-status-badge.is-inactive { background: var(--bg-elevated); color: var(--text-dim); }
+.market-status-countdown { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.market-status-tip { font-size: 11px; color: var(--text-dim); line-height: 1.4; margin: 0; }
+
 
 .sub-tabs { display: flex; gap: 6px; overflow-x: auto; margin-bottom: 12px; padding-bottom: 4px; }
 .sub-tabs.wrap { flex-wrap: wrap; }
@@ -225,6 +233,7 @@ body {
 .confirmation-chip { background: var(--bg-elevated); border-radius: 999px; padding: 4px 9px; font-size: 10px; text-transform: capitalize; }
 .invalidation-text { font-size: 12px; color: var(--text-dim); }
 .rationale-text { font-size: 12px; color: var(--text); line-height: 1.4; }
+.capped-note { font-size: 11px; color: var(--text-dim); font-style: italic; margin: -4px 0 8px; }
 .signal-actions { display: flex; gap: 8px; margin-top: 12px; }
 
 .funnel { display: flex; justify-content: space-between; gap: 6px; margin-bottom: 14px; }
@@ -252,6 +261,7 @@ body {
 .trade-row-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .status-pill { margin-left: auto; font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 999px; background: var(--bg-elevated); }
 .trade-row-strategy { font-size: 11px; color: var(--text-dim); margin-bottom: 6px; }
+.trade-row-live { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 10px; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed var(--border); }
 .trade-row-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 10px; }
 
 .equity-svg { width: 100%; height: 140px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 14px; }
@@ -264,6 +274,15 @@ body {
 
 .strategy-checks { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; max-height: 180px; overflow-y: auto; }
 .strategy-lab-list { display: flex; flex-direction: column; gap: 10px; }
+
+.watchlist-card { padding: 12px 14px; }
+.watchlist-market-label { font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+.watchlist-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.watchlist-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 999px; padding: 5px 6px 5px 12px; font-size: 12px; font-weight: 600; }
+.watchlist-remove { background: transparent; border: none; color: var(--text-dim); font-size: 11px; width: 20px; height: 20px; border-radius: 50%; cursor: pointer; padding: 0; }
+.watchlist-remove:active { background: var(--border); }
+.watchlist-add-row { display: flex; gap: 8px; }
+.watchlist-input { flex: 1; min-height: 40px; }
 
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: flex-end; justify-content: center; z-index: 50; }
 .modal-box { background: var(--bg-elevated); width: 100%; max-width: 480px; border-radius: 16px 16px 0 0; padding: 16px; max-height: 85vh; overflow-y: auto; }

@@ -63,12 +63,17 @@ export function signalCard(signal, { onPaperTrade, onMissed, blockedReason } = {
         kv("Stop Loss", fmtPrice(signal.stopLoss)),
         kv("Take Profit", signal.takeProfit ? fmtPrice(signal.takeProfit) : "—"),
         kv("R:R", signal.rr ? `1:${signal.rr.toFixed(2)}` : "—"),
-        kv("Risk", fmtUSD(signal.dollarRisk)),
-        kv("Reward", fmtUSD(signal.potentialReward)),
+        kv("Risk (if SL hits)", fmtUSD(signal.dollarRisk)),
+        kv("Reward (if TP hits)", fmtUSD(signal.potentialReward)),
         kv("Position Size", signal.positionSize ? signal.positionSize.toFixed(4) : "—"),
       ]),
     ])
   );
+  if (signal.rrCapped) {
+    card.appendChild(
+      el("p", { class: "capped-note" }, `Target pulled in to hold R:R at your max setting — structure suggested a farther target near ${fmtPrice(signal.structuralTarget)}.`)
+    );
+  }
 
   card.appendChild(
     el("div", { class: "signal-meta" }, [
@@ -134,15 +139,29 @@ export function funnelBar(funnel) {
   );
 }
 
-export function tradeRow(trade) {
+export function tradeRow(trade, live = null) {
   const statusClass = { WIN: "status-win", LOSS: "status-loss", OPEN: "status-open", AMBIGUOUS: "status-ambiguous" }[trade.status] || "";
-  return el("div", { class: `trade-row ${statusClass}` }, [
+  const rows = [
     el("div", { class: "trade-row-top" }, [
       el("span", { class: "ticker" }, trade.symbol),
       el("span", { class: `dir-pill dir-${trade.direction}` }, trade.direction === "long" ? "LONG" : "SHORT"),
       el("span", { class: `status-pill ${statusClass}` }, trade.status),
     ]),
     el("div", { class: "trade-row-strategy" }, trade.strategyName),
+  ];
+
+  if (trade.status === "OPEN") {
+    rows.push(
+      el("div", { class: "trade-row-live" }, [
+        kv("Current Price", live ? fmtPrice(live.currentPrice) : "…"),
+        kv("Unrealized P&L", live && live.unrealizedPnl !== null ? fmtUSD(live.unrealizedPnl) : "—"),
+        kv("If TP hits", `+${fmtUSD(trade.potentialReward)}`),
+        kv("If SL hits", `-${fmtUSD(trade.dollarRisk)}`),
+      ])
+    );
+  }
+
+  rows.push(
     el("div", { class: "trade-row-grid" }, [
       kv("Entry", fmtPrice(trade.entryPrice)),
       kv("SL", fmtPrice(trade.stopLoss)),
@@ -152,6 +171,8 @@ export function tradeRow(trade) {
       kv("R", trade.rMultiple !== null && trade.rMultiple !== undefined ? `${trade.rMultiple.toFixed(2)}R` : "—"),
       kv("Confidence", trade.confidence ? `${trade.confidence.score}/100` : "—"),
       kv("Holding", trade.resolvedAt ? formatHoldingTime(new Date(trade.resolvedAt) - new Date(trade.createdAt)) : "—"),
-    ]),
-  ]);
+    ])
+  );
+
+  return el("div", { class: `trade-row ${statusClass}` }, rows);
 }

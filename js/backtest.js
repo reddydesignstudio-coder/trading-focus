@@ -147,7 +147,7 @@ export function runBacktest({ candles, strategyIds, market, symbol, riskSettings
         entryIndex: i,
         entryPrice: candidate.idealEntry,
         stopLoss: candidate.stopLoss,
-        takeProfit: targetResult.finalTarget,
+        takeProfit: sizing.takeProfit,
         positionSize: sizing.units,
         dollarRisk: sizing.dollarRisk,
         rr: sizing.rr,
