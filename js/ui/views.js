@@ -1,7 +1,7 @@
 // js/ui/views.js
 import { el, signalCard, statCard, funnelBar, tradeRow, dataStatusBadge } from "./components.js";
 import { computeMarketFocus } from "../marketFocus.js";
-import { formatClock, DEFAULT_TIMEZONE, computeMarketBoard, formatCountdown } from "../timezone.js";
+import { formatClock, formatCountdownHMS, computeKeySessionCountdowns } from "../timezone.js";
 import { scanMarket, DEFAULT_WATCHLISTS } from "../scanner.js";
 import { getLiveModeStatus, executeTrade, markSignalMissed, saveSignal, TEST_MODE_OPTIONS } from "../paperTrading.js";
 import { recalculateTrade } from "../risk.js";
@@ -19,37 +19,62 @@ import { fmtUSD, fmtPct, todayKey } from "../utils.js";
 export async function renderHome(root, state) {
   root.innerHTML = "";
   const tz = state.effectiveTimeZone();
-  const focus = computeMarketFocus(new Date(), tz);
   const liveStatus = await getLiveModeStatus(tz);
   const summary = await getDailySummary({ timeZone: tz, startingBalance: state.settings.risk.accountBalance, mode: "live" });
 
-  const clockCard = el("div", { class: "card home-clock" }, [
-    el("div", { class: "clock-time" }, focus.localClock),
-    el("div", { class: "clock-tz" }, tz),
-  ]);
-  root.appendChild(clockCard);
+  // ---- Countdown hero (US Stocks Regular + Forex New York, live to the second) ----
+  const countdownHero = el("div", { class: "card countdown-hero" });
+  root.appendChild(countdownHero);
 
-  const focusCard = el("div", { class: "card focus-card" }, [
-    el("div", { class: "focus-label" }, "MARKET FOCUS"),
-    el("div", { class: "focus-market" }, `FOCUS NOW: ${labelForMarket(focus.focus.market)}`),
-    el("p", { class: "focus-reason" }, focus.focus.reason),
-    el("div", { class: "focus-tags" }, [
-      el("span", { class: "tag" }, `Liquidity: ${focus.focus.liquidity}`),
-      el("span", { class: "tag" }, `Volatility: ${focus.focus.volatility}`),
-    ]),
-    el("p", { class: "focus-action" }, focus.focus.recommendedAction),
-    focus.nextSession ? el("p", { class: "focus-next" }, `Next up: ${focus.nextSession.label} in ${minsToStr(focus.nextSession.minutesUntilOpen)}`) : null,
-    el("p", { class: "disclaimer-inline" }, focus.disclaimer),
-  ]);
-  root.appendChild(focusCard);
+  const clockLine = el("div", { class: "clock-time-small" });
+  root.appendChild(clockLine);
 
+  let cachedTargets = computeKeySessionCountdowns(new Date(), tz);
+  const refreshTargets = () => {
+    cachedTargets = computeKeySessionCountdowns(new Date(), tz);
+  };
+  const tick = () => {
+    const now = new Date();
+    clockLine.textContent = `${formatClock(now, tz)} · ${tz}`;
+    countdownHero.innerHTML = "";
+    cachedTargets.forEach((k) => {
+      const ms = k.targetAt ? k.targetAt - now : null;
+      if (ms !== null && ms < 0) refreshTargets(); // rolled over — recompute targets
+      countdownHero.appendChild(
+        el("div", { class: `countdown-row ${k.active ? "is-active" : "is-inactive"}` }, [
+          el("span", { class: "countdown-market" }, k.label),
+          el("div", { class: "countdown-value-wrap" }, [
+            el("span", { class: "countdown-phase" }, k.active ? "closes in" : "opens in"),
+            el("span", { class: "countdown-value" }, k.targetAt ? formatCountdownHMS(Math.max(0, ms)) : "—"),
+          ]),
+        ])
+      );
+    });
+  };
+  tick();
+  const secondInterval = setInterval(tick, 1000);
+  const refreshInterval = setInterval(refreshTargets, 30000);
+  state.registerInterval(secondInterval);
+  state.registerInterval(refreshInterval);
+
+  // ---- Market Focus — condensed to essentials ----
+  const focus = computeMarketFocus(new Date(), tz);
+  root.appendChild(
+    el("div", { class: `card focus-card focus-${focus.focus.market}` }, [
+      el("div", { class: "focus-market" }, `FOCUS NOW: ${labelForMarket(focus.focus.market)}`),
+      el("p", { class: "focus-reason" }, focus.focus.reason),
+    ])
+  );
+
+  // ---- Market buttons — colorful, one per asset class ----
   const buttonsRow = el("div", { class: "market-buttons" }, [
-    el("button", { class: "btn btn-market", onclick: () => state.goToScan("us_stocks") }, "CHECK US STOCKS"),
-    el("button", { class: "btn btn-market", onclick: () => state.goToScan("forex") }, "CHECK FOREX"),
-    el("button", { class: "btn btn-market", onclick: () => state.goToScan("crypto") }, "CHECK CRYPTO"),
+    el("button", { class: "btn btn-market market-stocks", onclick: () => state.goToScan("us_stocks") }, ["📊 ", "CHECK US STOCKS"]),
+    el("button", { class: "btn btn-market market-forex", onclick: () => state.goToScan("forex") }, ["💱 ", "CHECK FOREX"]),
+    el("button", { class: "btn btn-market market-crypto", onclick: () => state.goToScan("crypto") }, ["₿ ", "CHECK CRYPTO"]),
   ]);
   root.appendChild(buttonsRow);
 
+  // ---- Stats ----
   const statsGrid = el("div", { class: "stats-grid" }, [
     statCard("Account Balance", fmtUSD(state.settings.risk.accountBalance)),
     statCard("Today's P&L", fmtUSD(summary.metrics.netPnL)),
@@ -58,66 +83,37 @@ export async function renderHome(root, state) {
   ]);
   root.appendChild(statsGrid);
 
-  root.appendChild(el("div", { class: "section-title" }, "Session Board"));
-  const boardContainer = el("div", {});
-  root.appendChild(boardContainer);
-
-  const refresh = () => {
-    boardContainer.innerHTML = "";
-    renderSessionBoard(boardContainer, tz);
-  };
-  refresh();
-  const intervalId = setInterval(refresh, 30000); // countdowns refresh every 30s while Home is open
-  state.registerInterval(intervalId);
+  // ---- Data Status — unambiguous real-vs-demo, per market ----
+  root.appendChild(el("div", { class: "section-title" }, "Data Sources — Real or Demo?"));
+  root.appendChild(dataSourcesCard(state));
 }
 
-function renderSessionBoard(container, displayTimeZone) {
-  const marketBoard = computeMarketBoard(new Date(), displayTimeZone);
-
-  const marketOrder = [
-    ["us_stocks", "US Stocks"],
-    ["forex", "Forex"],
-    ["crypto", "Crypto"],
+function dataSourcesCard(state) {
+  const hasKey = !!state.settings.apiKeys.twelvedata;
+  const rows = [
+    { label: "Crypto", real: true, note: "Binance public API — always real, no setup needed" },
+    { label: "US Stocks", real: hasKey && state.settings.dataProviderOverride?.us_stocks !== "demo", note: hasKey ? "Twelve Data (delayed, real)" : "No API key set — showing simulated demo data" },
+    { label: "Forex", real: hasKey && state.settings.dataProviderOverride?.forex !== "demo", note: hasKey ? "Twelve Data (delayed, real)" : "No API key set — showing simulated demo data" },
   ];
-
-  marketOrder.forEach(([marketKey, marketLabel]) => {
-    const data = marketBoard[marketKey];
-    const card = el("div", { class: "card session-board-card" });
+  const card = el("div", { class: "card data-sources-card" });
+  rows.forEach((r) => {
     card.appendChild(
-      el("div", { class: "session-board-header" }, [
-        el("span", { class: "session-board-market" }, marketLabel),
-        el("span", { class: `session-status-pill ${data.active ? "is-active" : "is-inactive"}` }, data.active ? "ACTIVE" : "INACTIVE"),
+      el("div", { class: "data-source-row" }, [
+        el("span", { class: `data-source-dot ${r.real ? "is-real" : "is-demo"}` }),
+        el("span", { class: "data-source-label" }, r.label),
+        el("span", { class: `data-source-tag ${r.real ? "is-real" : "is-demo"}` }, r.real ? "REAL" : "DEMO"),
+        el("span", { class: "data-source-note" }, r.note),
       ])
     );
-
-    if (marketKey === "crypto") {
-      card.appendChild(el("p", { class: "session-board-note" }, data.note));
-      container.appendChild(card);
-      return;
-    }
-
-    const list = el("div", { class: "session-board-list" });
-    data.sessions.forEach((s) => {
-      list.appendChild(
-        el("div", { class: "session-board-row" }, [
-          el("span", { class: "session-board-name" }, s.label),
-          s.active
-            ? el("span", { class: "session-board-time active" }, `Active · closes ${s.localCloseTime} · ${formatCountdown(s.minutesUntilClose)} left`)
-            : el("span", { class: "session-board-time" }, s.opensAt ? `Opens ${s.localOpenTime} · in ${formatCountdown(s.minutesUntilOpen)}` : "—"),
-        ])
-      );
-    });
-    card.appendChild(list);
-    container.appendChild(card);
   });
+  if (!hasKey) {
+    card.appendChild(el("button", { class: "btn btn-primary", style: "margin-top:10px;width:100%", onclick: () => state.goToSettings() }, "Add free API key for real Stocks/Forex data →"));
+  }
+  return card;
 }
 
 function labelForMarket(m) {
   return { us_stocks: "US Stocks", forex: "Forex", crypto: "Crypto" }[m] || m;
-}
-function minsToStr(mins) {
-  if (mins < 60) return `${mins}m`;
-  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
 }
 
 // -------------------------------------------------------------- SCAN
@@ -336,6 +332,42 @@ function buildModal(title) {
 
 function friendlyErrorMessage(e) {
   return e?.userMessage || "Something went wrong retrieving market data. Please wait a moment and try again.";
+}
+
+// -------------------------------------------------------------- OTHERS (menu + sub-views)
+const OTHERS_MENU = [
+  { id: "journal", label: "Journal", icon: "📔", desc: "Every trade you've taken, in one list", render: renderJournal },
+  { id: "daily", label: "Today", icon: "📅", desc: "Today's signal funnel and trades", render: renderDailySummary },
+  { id: "performance", label: "Performance", icon: "📈", desc: "Win rate, P&L, equity curve over time", render: renderPerformance },
+  { id: "backtest", label: "Backtest", icon: "🧪", desc: "Test a strategy against historical data", render: renderBacktest },
+  { id: "lab", label: "Strategy Lab", icon: "🔬", desc: "Factual performance per strategy", render: renderStrategyLab },
+];
+
+export async function renderOthers(root, state) {
+  root.innerHTML = "";
+
+  if (!state.othersView) {
+    root.appendChild(el("div", { class: "section-title" }, "More"));
+    const menu = el("div", { class: "others-menu" });
+    OTHERS_MENU.forEach((item) => {
+      menu.appendChild(
+        el("button", { class: "others-menu-item", onclick: () => { state.othersView = item.id; renderOthers(root, state); } }, [
+          el("span", { class: "others-menu-icon" }, item.icon),
+          el("div", { class: "others-menu-text" }, [el("div", { class: "others-menu-label" }, item.label), el("div", { class: "others-menu-desc" }, item.desc)]),
+          el("span", { class: "others-menu-chevron" }, "›"),
+        ])
+      );
+    });
+    root.appendChild(menu);
+    return;
+  }
+
+  const item = OTHERS_MENU.find((i) => i.id === state.othersView);
+  const backBar = el("button", { class: "back-bar", onclick: () => { state.othersView = null; renderOthers(root, state); } }, "‹ Back to More");
+  root.appendChild(backBar);
+  const subRoot = el("div", {});
+  root.appendChild(subRoot);
+  if (item) await item.render(subRoot, state);
 }
 
 // -------------------------------------------------------------- JOURNAL

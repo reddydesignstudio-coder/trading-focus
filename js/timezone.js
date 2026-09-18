@@ -288,6 +288,43 @@ export function formatCountdown(mins) {
   return `${h}h ${m}m`;
 }
 
+/** Formats a millisecond duration as "Xh Ym Zs" (with seconds) for a live-ticking countdown. */
+export function formatCountdownHMS(ms) {
+  if (ms === null || ms === undefined || ms < 0) return "—";
+  const totalSeconds = Math.floor(ms / 1000);
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  if (h > 0) return `${h}h ${pad(m)}m ${pad(s)}s`;
+  return `${m}m ${pad(s)}s`;
+}
+
+/**
+ * The two sessions the Home screen's compact countdown hero cares about:
+ * US Stocks Regular session, and Forex New York session (the two the user
+ * actually wants surfaced, rather than the full 7-session board). Each
+ * entry carries the raw target Date (open or close instant) so the caller
+ * can tick a live per-second countdown against it without recomputing
+ * Intl-based session math every second.
+ */
+export function computeKeySessionCountdowns(now = new Date(), displayTimeZone = DEFAULT_TIMEZONE) {
+  const usRegular = SESSIONS.find((s) => s.id === "us_regular");
+  const nyForex = SESSIONS.find((s) => s.id === "newyork_fx");
+
+  const build = (session, label) => {
+    const active = isSessionActive(session, now);
+    if (active) {
+      const targetAt = sessionCloseDate(session, now);
+      return { id: session.id, label, active: true, targetAt, phase: "closes" };
+    }
+    const targetAt = nextSessionOpenDate(session, now);
+    return { id: session.id, label, active: false, targetAt, phase: "opens" };
+  };
+
+  return [build(usRegular, "US Stocks"), build(nyForex, "Forex (New York)")];
+}
+
 /** US market holidays (fixed-date + a few observed ones) for the current & next year — best-effort, static list. */
 export const US_MARKET_HOLIDAYS_NOTE =
   "Market holiday calendars are not fetched live in Phase 1 (no free, reliable, no-key holiday API). " +

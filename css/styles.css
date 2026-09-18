@@ -9,7 +9,11 @@
   --green: #16a34a;
   --red: #dc2626;
   --amber: #d97706;
+  --stocks-color: #3b82f6;
+  --forex-color: #a855f7;
+  --crypto-color: #f59e0b;
   --radius: 14px;
+  --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
@@ -17,6 +21,7 @@
 html, body { margin: 0; padding: 0; }
 body {
   background: var(--bg);
+  background-image: radial-gradient(circle at 15% 0%, rgba(59,130,246,0.12), transparent 45%), radial-gradient(circle at 85% 10%, rgba(168,85,247,0.10), transparent 40%);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -26,7 +31,7 @@ body {
 #app { display: flex; flex-direction: column; min-height: 100vh; }
 
 .app-header {
-  padding: 14px 16px 10px;
+  padding: calc(10px + var(--safe-top)) 16px 10px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -36,8 +41,8 @@ body {
   background: var(--bg);
   z-index: 10;
 }
-.app-title { font-size: 18px; font-weight: 700; }
-.app-subtitle { font-size: 11px; color: var(--text-dim); }
+.app-title { font-size: 17px; font-weight: 700; line-height: 1.3; }
+.app-subtitle { font-size: 10px; color: var(--text-dim); }
 
 .app-content {
   flex: 1;
@@ -81,20 +86,25 @@ body {
   margin-bottom: 12px;
 }
 
-.home-clock { text-align: center; }
-.clock-time { font-size: 32px; font-weight: 700; }
-.clock-tz { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+.countdown-hero { padding: 14px 16px; background: linear-gradient(135deg, rgba(59,130,246,0.15), rgba(168,85,247,0.10)); border-color: var(--border); }
+.countdown-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; }
+.countdown-row + .countdown-row { border-top: 1px solid var(--border); }
+.countdown-market { font-size: 13px; font-weight: 700; color: var(--text); }
+.countdown-value-wrap { display: flex; align-items: baseline; gap: 6px; }
+.countdown-phase { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+.countdown-value { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+.countdown-row.is-active .countdown-value { color: var(--green); }
+.countdown-row.is-inactive .countdown-value { color: var(--amber); }
+.clock-time-small { text-align: center; font-size: 12px; color: var(--text-dim); margin: 6px 0 12px; }
 
-.focus-card .focus-label { font-size: 11px; color: var(--text-dim); letter-spacing: 0.08em; }
-.focus-market { font-size: 20px; font-weight: 700; margin: 4px 0; }
-.focus-reason { font-size: 13px; color: var(--text-dim); line-height: 1.4; }
-.focus-tags { display: flex; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
-.tag { background: var(--bg-elevated); border-radius: 999px; padding: 4px 10px; font-size: 11px; color: var(--text-dim); }
-.focus-action { font-size: 13px; font-weight: 600; margin-top: 6px; }
-.focus-next { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
-.disclaimer-inline { font-size: 11px; color: var(--text-dim); font-style: italic; margin-top: 8px; }
+.focus-card { border-left: 4px solid var(--accent); }
+.focus-card.focus-us_stocks { border-left-color: var(--stocks-color); background: linear-gradient(135deg, rgba(59,130,246,0.10), transparent); }
+.focus-card.focus-forex { border-left-color: var(--forex-color); background: linear-gradient(135deg, rgba(168,85,247,0.10), transparent); }
+.focus-card.focus-crypto { border-left-color: var(--crypto-color); background: linear-gradient(135deg, rgba(245,158,11,0.10), transparent); }
+.focus-market { font-size: 17px; font-weight: 700; margin: 0 0 4px; }
+.focus-reason { font-size: 13px; color: var(--text-dim); line-height: 1.4; margin: 0; }
 
-.market-buttons { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.market-buttons { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
 .btn {
   background: var(--bg-elevated);
   color: var(--text);
@@ -109,33 +119,49 @@ body {
 .btn:active { opacity: 0.8; }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: white; }
 .btn-large { width: 100%; font-size: 16px; padding: 16px; margin: 8px 0 16px; }
-.btn-market { text-align: left; font-weight: 700; }
+.btn-market { text-align: left; font-weight: 700; color: white; border: none; }
+.btn-market.market-stocks { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+.btn-market.market-forex { background: linear-gradient(135deg, #a855f7, #7e22ce); }
+.btn-market.market-crypto { background: linear-gradient(135deg, #f59e0b, #d97706); }
 .btn-ghost { background: transparent; }
 .btn-disabled { opacity: 0.4; cursor: not-allowed; }
 .blocked-reason { font-size: 11px; color: var(--amber); margin-top: 6px; }
 
 .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
-.stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+.stat-card { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 12px; padding: 12px; }
 .stat-label { font-size: 11px; color: var(--text-dim); }
 .stat-value { font-size: 18px; font-weight: 700; margin-top: 2px; }
 .stat-sub { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
 
-.session-chips { display: flex; gap: 6px; flex-wrap: wrap; }
-.session-chip { background: var(--bg-elevated); border-radius: 999px; padding: 5px 10px; font-size: 11px; color: var(--text-dim); }
-.session-chip.active { color: var(--green); border: 1px solid var(--green); }
+.data-sources-card { padding: 12px 14px; }
+.data-source-row { display: flex; align-items: center; gap: 8px; padding: 7px 0; font-size: 12px; flex-wrap: wrap; }
+.data-source-row + .data-source-row { border-top: 1px solid var(--border); }
+.data-source-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.data-source-dot.is-real { background: var(--green); }
+.data-source-dot.is-demo { background: var(--amber); }
+.data-source-label { font-weight: 700; min-width: 70px; }
+.data-source-tag { font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 999px; }
+.data-source-tag.is-real { background: rgba(22,163,74,0.2); color: var(--green); }
+.data-source-tag.is-demo { background: rgba(217,119,6,0.2); color: var(--amber); }
+.data-source-note { color: var(--text-dim); font-size: 11px; flex-basis: 100%; margin-left: 17px; }
 
-.session-board-card { padding: 12px 14px; }
-.session-board-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-.session-board-market { font-size: 13px; font-weight: 700; }
-.session-status-pill { font-size: 10px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
-.session-status-pill.is-active { background: rgba(22,163,74,0.2); color: var(--green); }
-.session-status-pill.is-inactive { background: var(--bg-elevated); color: var(--text-dim); }
-.session-board-note { font-size: 12px; color: var(--text-dim); }
-.session-board-list { display: flex; flex-direction: column; gap: 6px; }
-.session-board-row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 12px; flex-wrap: wrap; }
-.session-board-name { color: var(--text-dim); flex-shrink: 0; }
-.session-board-time { font-weight: 600; text-align: right; }
-.session-board-time.active { color: var(--green); }
+.others-menu { display: flex; flex-direction: column; gap: 8px; }
+.others-menu-item {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  padding: 14px; text-align: left; color: var(--text); min-height: 48px;
+}
+.others-menu-icon { font-size: 22px; flex-shrink: 0; }
+.others-menu-text { flex: 1; }
+.others-menu-label { font-size: 14px; font-weight: 700; }
+.others-menu-desc { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.others-menu-chevron { font-size: 20px; color: var(--text-dim); }
+.back-bar {
+  background: transparent; border: none; color: var(--accent); font-size: 13px; font-weight: 600;
+  padding: 8px 0; margin-bottom: 6px; min-height: 36px; cursor: pointer;
+}
+.disclaimer-inline { font-size: 11px; color: var(--text-dim); font-style: italic; margin-top: 8px; }
+
 
 .sub-tabs { display: flex; gap: 6px; overflow-x: auto; margin-bottom: 12px; padding-bottom: 4px; }
 .sub-tabs.wrap { flex-wrap: wrap; }

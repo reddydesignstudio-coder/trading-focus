@@ -1,16 +1,12 @@
 // js/app.js
 import { loadSettings, saveSettings, effectiveTimeZone } from "./settings.js";
-import { renderHome, renderScan, renderJournal, renderDailySummary, renderPerformance, renderBacktest, renderStrategyLab, renderSettings } from "./ui/views.js";
+import { renderHome, renderScan, renderOthers, renderSettings } from "./ui/views.js";
 import { el } from "./ui/components.js";
 
 const TABS = [
   { id: "home", label: "Home", render: renderHome },
   { id: "scan", label: "Scan", render: renderScan },
-  { id: "journal", label: "Journal", render: renderJournal },
-  { id: "daily", label: "Today", render: renderDailySummary },
-  { id: "performance", label: "Performance", render: renderPerformance },
-  { id: "backtest", label: "Backtest", render: renderBacktest },
-  { id: "lab", label: "Strategy Lab", render: renderStrategyLab },
+  { id: "others", label: "More", render: renderOthers },
   { id: "settings", label: "Settings", render: renderSettings },
 ];
 
@@ -20,6 +16,7 @@ const state = {
   currentScanMarket: "us_stocks",
   tradeMode: "live",
   performanceFilter: "30d",
+  othersView: null, // null = show the "More" menu; otherwise one of journal/daily/performance/backtest/lab
   intervalIds: [],
   effectiveTimeZone() {
     return effectiveTimeZone(this.settings);
@@ -27,6 +24,13 @@ const state = {
   goToScan(market) {
     state.currentScanMarket = market;
     setTab("scan");
+  },
+  goToSettings() {
+    setTab("settings");
+  },
+  goToOthers(view) {
+    state.othersView = view;
+    setTab("others");
   },
   async persistSettings() {
     await saveSettings(state.settings);
@@ -51,7 +55,8 @@ const contentRoot = document.getElementById("content");
 function buildNav() {
   navRoot.innerHTML = "";
   TABS.forEach((tab) => {
-    const btn = el("button", { class: `nav-btn ${tab.id === state.currentTab ? "active" : ""}`, onclick: () => setTab(tab.id) }, tab.label);
+    const onClick = tab.id === "others" ? () => { state.othersView = null; setTab("others"); } : () => setTab(tab.id);
+    const btn = el("button", { class: `nav-btn ${tab.id === state.currentTab ? "active" : ""}`, onclick: onClick }, tab.label);
     navRoot.appendChild(btn);
   });
 }
