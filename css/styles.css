@@ -1,17 +1,17 @@
 :root {
-  --bg: #0b1220;
-  --bg-elevated: #131c2e;
-  --card: #16213a;
-  --border: #253150;
-  --text: #e7ecf7;
-  --text-dim: #9aa7c2;
-  --accent: #3b82f6;
-  --green: #16a34a;
-  --red: #dc2626;
-  --amber: #d97706;
-  --stocks-color: #3b82f6;
-  --forex-color: #a855f7;
-  --crypto-color: #f59e0b;
+  --bg: #0f1420;
+  --bg-elevated: #161d2c;
+  --card: #1a2233;
+  --border: #2a3347;
+  --text: #dfe4ee;
+  --text-dim: #8b96ac;
+  --accent: #5b8def;
+  --green: #4d9d6f;
+  --red: #c25b5b;
+  --amber: #c68a4a;
+  --stocks-color: #5b8def;
+  --forex-color: #9d7fc9;
+  --crypto-color: #c68a4a;
   --radius: 14px;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -21,7 +21,6 @@
 html, body { margin: 0; padding: 0; }
 body {
   background: var(--bg);
-  background-image: radial-gradient(circle at 15% 0%, rgba(59,130,246,0.12), transparent 45%), radial-gradient(circle at 85% 10%, rgba(168,85,247,0.10), transparent 40%);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -86,22 +85,22 @@ body {
   margin-bottom: 12px;
 }
 
-.countdown-hero { padding: 14px 16px; background: linear-gradient(135deg, rgba(59,130,246,0.15), rgba(168,85,247,0.10)); border-color: var(--border); }
+.countdown-hero { padding: 14px 16px; background: var(--card); border-color: var(--border); }
 .countdown-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; }
 .countdown-row + .countdown-row { border-top: 1px solid var(--border); }
 .countdown-market { font-size: 13px; font-weight: 700; color: var(--text); }
 .countdown-value-wrap { display: flex; align-items: baseline; gap: 6px; }
 .countdown-phase { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
-.countdown-value { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+.countdown-value { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; color: var(--text); }
 .countdown-row.is-active .countdown-value { color: var(--green); }
-.countdown-row.is-inactive .countdown-value { color: var(--amber); }
+.countdown-row.is-inactive .countdown-value { color: var(--text-dim); }
 .clock-time-small { text-align: center; font-size: 12px; color: var(--text-dim); margin: 6px 0 12px; }
 
-.focus-card { border-left: 4px solid var(--accent); }
-.focus-card.focus-us_stocks { border-left-color: var(--stocks-color); background: linear-gradient(135deg, rgba(59,130,246,0.10), transparent); }
-.focus-card.focus-forex { border-left-color: var(--forex-color); background: linear-gradient(135deg, rgba(168,85,247,0.10), transparent); }
-.focus-card.focus-crypto { border-left-color: var(--crypto-color); background: linear-gradient(135deg, rgba(245,158,11,0.10), transparent); }
-.focus-market { font-size: 17px; font-weight: 700; margin: 0 0 4px; }
+.focus-card { border-left: 3px solid var(--accent); background: var(--card); }
+.focus-card.focus-us_stocks { border-left-color: var(--stocks-color); }
+.focus-card.focus-forex { border-left-color: var(--forex-color); }
+.focus-card.focus-crypto { border-left-color: var(--crypto-color); }
+.focus-market { font-size: 15px; font-weight: 700; margin: 0 0 4px; }
 .focus-reason { font-size: 13px; color: var(--text-dim); line-height: 1.4; margin: 0; }
 
 .market-buttons { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
@@ -119,16 +118,16 @@ body {
 .btn:active { opacity: 0.8; }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: white; }
 .btn-large { width: 100%; font-size: 16px; padding: 16px; margin: 8px 0 16px; }
-.btn-market { text-align: left; font-weight: 700; color: white; border: none; }
-.btn-market.market-stocks { background: linear-gradient(135deg, #3b82f6, #2563eb); }
-.btn-market.market-forex { background: linear-gradient(135deg, #a855f7, #7e22ce); }
-.btn-market.market-crypto { background: linear-gradient(135deg, #f59e0b, #d97706); }
+.btn-market { text-align: left; font-weight: 700; background: var(--bg-elevated); border: 1px solid var(--border); border-left: 3px solid var(--accent); color: var(--text); }
+.btn-market.market-stocks { border-left-color: var(--stocks-color); }
+.btn-market.market-forex { border-left-color: var(--forex-color); }
+.btn-market.market-crypto { border-left-color: var(--crypto-color); }
 .btn-ghost { background: transparent; }
 .btn-disabled { opacity: 0.4; cursor: not-allowed; }
 .blocked-reason { font-size: 11px; color: var(--amber); margin-top: 6px; }
 
 .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
-.stat-card { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 12px; padding: 12px; }
+.stat-card { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 12px; padding: 12px; }
 .stat-label { font-size: 11px; color: var(--text-dim); }
 .stat-value { font-size: 18px; font-weight: 700; margin-top: 2px; }
 .stat-sub { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
@@ -161,6 +160,13 @@ body {
   padding: 8px 0; margin-bottom: 6px; min-height: 36px; cursor: pointer;
 }
 .disclaimer-inline { font-size: 11px; color: var(--text-dim); font-style: italic; margin-top: 8px; }
+
+.scan-legend { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; font-size: 12px; }
+.scan-legend summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+.scan-legend-list { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.scan-legend-row { display: flex; flex-direction: column; gap: 1px; }
+.scan-legend-row strong { font-size: 11px; letter-spacing: 0.03em; }
+.scan-legend-row span { color: var(--text-dim); font-size: 11px; line-height: 1.4; }
 
 
 .sub-tabs { display: flex; gap: 6px; overflow-x: auto; margin-bottom: 12px; padding-bottom: 4px; }

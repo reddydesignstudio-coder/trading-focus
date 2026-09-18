@@ -117,6 +117,38 @@ function labelForMarket(m) {
 }
 
 // -------------------------------------------------------------- SCAN
+function scanLegend() {
+  const details = document.createElement("details");
+  details.className = "scan-legend";
+  const summary = document.createElement("summary");
+  summary.textContent = "What do LIVE / DELAYED / QUALIFYING / REJECTED mean?";
+  details.appendChild(summary);
+  const items = [
+    ["LIVE", "Real, current-as-of-seconds data (currently: Crypto via Binance only)."],
+    ["DELAYED", "Real data, but not guaranteed up-to-the-second (currently: Stocks/Forex via Twelve Data)."],
+    ["STALE", "Data came back too old to trust — new signals are blocked until it refreshes."],
+    ["DEMO MODE", "No real data source configured — simulated, deterministic fake data so you can try the app."],
+    ["QUALIFYING", "This symbol had a setup that passed every filter — it's shown above as a signal card."],
+    ["REJECTED", "A strategy's entry condition triggered, but it failed a quality/risk check (weak confirmation, poor R:R, etc). This is the app working correctly, not an error — most scans reject far more than they qualify."],
+    ["NO SETUP DETECTED", "None of the strategies for this market saw a matching pattern on the latest candle right now — nothing to reject, there was just nothing there."],
+  ];
+  const list = document.createElement("div");
+  list.className = "scan-legend-list";
+  items.forEach(([term, desc]) => {
+    const row = document.createElement("div");
+    row.className = "scan-legend-row";
+    const t = document.createElement("strong");
+    t.textContent = term;
+    const d = document.createElement("span");
+    d.textContent = desc;
+    row.appendChild(t);
+    row.appendChild(d);
+    list.appendChild(row);
+  });
+  details.appendChild(list);
+  return details;
+}
+
 export async function renderScan(root, state) {
   root.innerHTML = "";
   const market = state.currentScanMarket || "us_stocks";
@@ -141,6 +173,8 @@ export async function renderScan(root, state) {
     ]),
   ]);
   root.appendChild(modeRow);
+
+  root.appendChild(scanLegend());
 
   const isDemoForThisMarket = state.settings.dataProviderOverride?.[market] === "demo" || (market !== "crypto" && !state.settings.apiKeys.twelvedata);
 
