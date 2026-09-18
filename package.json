@@ -1,0 +1,12 @@
+{
+  "name": "trading-focus-pwa",
+  "version": "1.0.0",
+  "description": "Phase 1 — Zero-cost, client-side day trading analysis & paper trading PWA",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/",
+    "serve": "python3 -m http.server 8080"
+  },
+  "license": "UNLICENSED"
+}

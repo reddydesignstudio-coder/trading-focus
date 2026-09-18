@@ -1,0 +1,658 @@
+// js/ui/views.js
+import { el, signalCard, statCard, funnelBar, tradeRow, dataStatusBadge } from "./components.js";
+import { computeMarketFocus } from "../marketFocus.js";
+import { formatClock, DEFAULT_TIMEZONE, computeMarketBoard, formatCountdown } from "../timezone.js";
+import { scanMarket, DEFAULT_WATCHLISTS } from "../scanner.js";
+import { getLiveModeStatus, executeTrade, markSignalMissed, saveSignal, TEST_MODE_OPTIONS } from "../paperTrading.js";
+import { recalculateTrade } from "../risk.js";
+import { getDailySummary } from "../dailySummary.js";
+import { getAll } from "../db.js";
+import { computePerformance } from "../performance.js";
+import { getStrategyLab } from "../strategyLab.js";
+import { runBacktest } from "../backtest.js";
+import { getMarketData } from "../dataProviders/index.js";
+import { strategiesForMarket, ALL_STRATEGIES } from "../strategies/index.js";
+import { exportJSON, exportTradesCSV, importFromJSON, downloadBlob } from "../exportImport.js";
+import { fmtUSD, fmtPct, todayKey } from "../utils.js";
+
+// -------------------------------------------------------------- HOME
+export async function renderHome(root, state) {
+  root.innerHTML = "";
+  const tz = state.effectiveTimeZone();
+  const focus = computeMarketFocus(new Date(), tz);
+  const liveStatus = await getLiveModeStatus(tz);
+  const summary = await getDailySummary({ timeZone: tz, startingBalance: state.settings.risk.accountBalance, mode: "live" });
+
+  const clockCard = el("div", { class: "card home-clock" }, [
+    el("div", { class: "clock-time" }, focus.localClock),
+    el("div", { class: "clock-tz" }, tz),
+  ]);
+  root.appendChild(clockCard);
+
+  const focusCard = el("div", { class: "card focus-card" }, [
+    el("div", { class: "focus-label" }, "MARKET FOCUS"),
+    el("div", { class: "focus-market" }, `FOCUS NOW: ${labelForMarket(focus.focus.market)}`),
+    el("p", { class: "focus-reason" }, focus.focus.reason),
+    el("div", { class: "focus-tags" }, [
+      el("span", { class: "tag" }, `Liquidity: ${focus.focus.liquidity}`),
+      el("span", { class: "tag" }, `Volatility: ${focus.focus.volatility}`),
+    ]),
+    el("p", { class: "focus-action" }, focus.focus.recommendedAction),
+    focus.nextSession ? el("p", { class: "focus-next" }, `Next up: ${focus.nextSession.label} in ${minsToStr(focus.nextSession.minutesUntilOpen)}`) : null,
+    el("p", { class: "disclaimer-inline" }, focus.disclaimer),
+  ]);
+  root.appendChild(focusCard);
+
+  const buttonsRow = el("div", { class: "market-buttons" }, [
+    el("button", { class: "btn btn-market", onclick: () => state.goToScan("us_stocks") }, "CHECK US STOCKS"),
+    el("button", { class: "btn btn-market", onclick: () => state.goToScan("forex") }, "CHECK FOREX"),
+    el("button", { class: "btn btn-market", onclick: () => state.goToScan("crypto") }, "CHECK CRYPTO"),
+  ]);
+  root.appendChild(buttonsRow);
+
+  const statsGrid = el("div", { class: "stats-grid" }, [
+    statCard("Account Balance", fmtUSD(state.settings.risk.accountBalance)),
+    statCard("Today's P&L", fmtUSD(summary.metrics.netPnL)),
+    statCard("Today's Win %", summary.metrics.winPct === null ? "N/A" : fmtPct(summary.metrics.winPct)),
+    statCard("Live Mode", liveStatus.available ? "AVAILABLE" : "COMPLETED", liveStatus.available ? "1 trade available today" : liveStatus.reason.replace(/_/g, " ")),
+  ]);
+  root.appendChild(statsGrid);
+
+  root.appendChild(el("div", { class: "section-title" }, "Session Board"));
+  const boardContainer = el("div", {});
+  root.appendChild(boardContainer);
+
+  const refresh = () => {
+    boardContainer.innerHTML = "";
+    renderSessionBoard(boardContainer, tz);
+  };
+  refresh();
+  const intervalId = setInterval(refresh, 30000); // countdowns refresh every 30s while Home is open
+  state.registerInterval(intervalId);
+}
+
+function renderSessionBoard(container, displayTimeZone) {
+  const marketBoard = computeMarketBoard(new Date(), displayTimeZone);
+
+  const marketOrder = [
+    ["us_stocks", "US Stocks"],
+    ["forex", "Forex"],
+    ["crypto", "Crypto"],
+  ];
+
+  marketOrder.forEach(([marketKey, marketLabel]) => {
+    const data = marketBoard[marketKey];
+    const card = el("div", { class: "card session-board-card" });
+    card.appendChild(
+      el("div", { class: "session-board-header" }, [
+        el("span", { class: "session-board-market" }, marketLabel),
+        el("span", { class: `session-status-pill ${data.active ? "is-active" : "is-inactive"}` }, data.active ? "ACTIVE" : "INACTIVE"),
+      ])
+    );
+
+    if (marketKey === "crypto") {
+      card.appendChild(el("p", { class: "session-board-note" }, data.note));
+      container.appendChild(card);
+      return;
+    }
+
+    const list = el("div", { class: "session-board-list" });
+    data.sessions.forEach((s) => {
+      list.appendChild(
+        el("div", { class: "session-board-row" }, [
+          el("span", { class: "session-board-name" }, s.label),
+          s.active
+            ? el("span", { class: "session-board-time active" }, `Active · closes ${s.localCloseTime} · ${formatCountdown(s.minutesUntilClose)} left`)
+            : el("span", { class: "session-board-time" }, s.opensAt ? `Opens ${s.localOpenTime} · in ${formatCountdown(s.minutesUntilOpen)}` : "—"),
+        ])
+      );
+    });
+    card.appendChild(list);
+    container.appendChild(card);
+  });
+}
+
+function labelForMarket(m) {
+  return { us_stocks: "US Stocks", forex: "Forex", crypto: "Crypto" }[m] || m;
+}
+function minsToStr(mins) {
+  if (mins < 60) return `${mins}m`;
+  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
+// -------------------------------------------------------------- SCAN
+export async function renderScan(root, state) {
+  root.innerHTML = "";
+  const market = state.currentScanMarket || "us_stocks";
+
+  const tabs = el(
+    "div",
+    { class: "sub-tabs" },
+    ["us_stocks", "forex", "crypto"].map((m) =>
+      el("button", { class: `sub-tab ${m === market ? "active" : ""}`, onclick: () => { state.currentScanMarket = m; renderScan(root, state); } }, labelForMarket(m))
+    )
+  );
+  root.appendChild(tabs);
+
+  const modeRow = el("div", { class: "mode-row" }, [
+    el("label", {}, [
+      el("input", { type: "radio", name: "trademode", checked: state.tradeMode === "live" ? "checked" : null, onchange: () => { state.tradeMode = "live"; renderScan(root, state); } }),
+      " Live Mode",
+    ]),
+    el("label", {}, [
+      el("input", { type: "radio", name: "trademode", checked: state.tradeMode === "test" ? "checked" : null, onchange: () => { state.tradeMode = "test"; renderScan(root, state); } }),
+      " Test Mode",
+    ]),
+  ]);
+  root.appendChild(modeRow);
+
+  const isDemoForThisMarket = state.settings.dataProviderOverride?.[market] === "demo" || (market !== "crypto" && !state.settings.apiKeys.twelvedata);
+
+  if (isDemoForThisMarket) {
+    root.appendChild(
+      el("div", { class: "notice notice-demo" }, [
+        el("strong", {}, "DEMO MODE: "),
+        market === "crypto"
+          ? "Demo override enabled in Settings."
+          : "No Twelve Data API key configured — add a free key in Settings to scan real US Stocks/Forex data. Showing deterministic demo data so you can exercise the full workflow.",
+      ])
+    );
+    if (state.tradeMode === "live") {
+      root.appendChild(
+        el("div", { class: "notice notice-error" }, [
+          el("strong", {}, "Live Mode is selected, but this market is on Demo data. "),
+          "Live Mode trades can only be executed against real data — the PAPER TRADE button will be disabled on any signal below until you add an API key or switch to Test Mode.",
+        ])
+      );
+    }
+  }
+
+  const scanBtn = el("button", { class: "btn btn-primary btn-large", onclick: () => runScan() }, "CHECK FOR TRADE");
+  root.appendChild(scanBtn);
+
+  const resultsWrap = el("div", { class: "scan-results" });
+  root.appendChild(resultsWrap);
+
+  async function runScan() {
+    scanBtn.disabled = true;
+    scanBtn.textContent = "Scanning…";
+    resultsWrap.innerHTML = "";
+    try {
+      const forceProviderId = state.settings.dataProviderOverride?.[market];
+      const result = await scanMarket({
+        market,
+        watchlist: state.settings.watchlists?.[market] || DEFAULT_WATCHLISTS[market],
+        riskSettings: state.settings.risk,
+        apiKeys: state.settings.apiKeys,
+        forceProviderId,
+      });
+
+      for (const perSymbol of result.perSymbol) {
+        for (const sig of perSymbol.qualifying) await saveSignal(sig, state.effectiveTimeZone());
+      }
+
+      const dataBadgeRow = el("div", { class: "data-status-row" }, [dataStatusBadge(result.isDemo ? "DEMO" : result.perSymbol[0]?.dataStatus)]);
+      resultsWrap.appendChild(dataBadgeRow);
+
+      if (result.qualifying.length === 0) {
+        resultsWrap.appendChild(
+          el("div", { class: "no-trade-card" }, [
+            el("div", { class: "no-trade-title" }, "NO QUALIFYING TRADE"),
+            el("p", {}, `Scanned ${result.symbolsScanned} symbols. No setup met the minimum confirmation, risk/reward, or no-trade filter requirements right now — see the breakdown below for exactly why each symbol was passed over.`),
+          ])
+        );
+      } else {
+        result.qualifying.forEach((sig) => {
+          resultsWrap.appendChild(
+            signalCard(sig, {
+              onPaperTrade: (s) => openTradeModal(s, state),
+              onMissed: async (s) => {
+                await markSignalMissed(s, state.effectiveTimeZone());
+                alert("Marked as missed. It will not count toward wins/losses.");
+              },
+              blockedReason:
+                state.tradeMode === "live" && sig.isDemo
+                  ? "Live Mode can't execute a trade on Demo data. Switch to Test Mode, or add a Twelve Data API key in Settings."
+                  : null,
+            })
+          );
+        });
+      }
+
+      resultsWrap.appendChild(el("div", { class: "section-title" }, `Symbols Scanned (${result.perSymbol.length})`));
+      resultsWrap.appendChild(symbolsScannedTable(result.perSymbol));
+    } catch (e) {
+      resultsWrap.appendChild(el("div", { class: "notice notice-error" }, friendlyErrorMessage(e)));
+    } finally {
+      scanBtn.disabled = false;
+      scanBtn.textContent = "CHECK FOR TRADE";
+    }
+  }
+}
+
+/** Full per-symbol audit trail: qualifying / rejected (with reasons) / no setup detected — every symbol scanned, accounted for. */
+function symbolsScannedTable(perSymbolResults) {
+  const container = el("div", { class: "symbol-audit-list" });
+  perSymbolResults.forEach((r) => {
+    const hasQualifying = r.qualifying.length > 0;
+    const hasRejected = (r.rejected || []).length > 0;
+    const statusLabel = r.error ? "DATA ISSUE" : hasQualifying ? "QUALIFYING" : hasRejected ? "REJECTED" : "NO SETUP DETECTED";
+    const statusClass = r.error ? "audit-issue" : hasQualifying ? "audit-qualifying" : hasRejected ? "audit-rejected" : "audit-none";
+
+    const row = el("div", { class: "symbol-audit-row" });
+    const header = el("div", { class: "symbol-audit-header" }, [
+      el("span", { class: "ticker" }, r.symbol),
+      el("span", { class: `audit-status-pill ${statusClass}` }, statusLabel),
+      dataStatusBadge(r.isDemo ? "DEMO" : r.dataStatus),
+    ]);
+    row.appendChild(header);
+
+    if (r.error) {
+      row.appendChild(el("p", { class: "audit-detail" }, r.error));
+    } else if (hasQualifying) {
+      row.appendChild(el("p", { class: "audit-detail" }, `${r.qualifying.length} qualifying setup(s): ${r.qualifying.map((q) => q.strategyName).join(", ")}.`));
+    } else if (hasRejected) {
+      const list = el("ul", { class: "audit-reasons" });
+      r.rejected.forEach((rej) => {
+        list.appendChild(el("li", {}, [el("strong", {}, `${rej.strategyName}: `), rej.rejectionReasons.join(" ")]));
+      });
+      row.appendChild(list);
+    } else {
+      row.appendChild(el("p", { class: "audit-detail" }, `None of the ${r.strategiesEvaluated ?? "applicable"} strategies for this market found a matching entry pattern on the latest candle.`));
+    }
+    container.appendChild(row);
+  });
+  return container;
+}
+
+function openTradeModal(signal, state) {
+  const modal = buildModal(`Confirm Paper Trade — ${signal.symbol}`);
+  const entryInput = el("input", { type: "number", step: "any", value: signal.idealEntry, class: "input" });
+  const recalcOut = el("div", { class: "recalc-out" });
+
+  function recalc() {
+    const entry = parseFloat(entryInput.value);
+    if (Number.isNaN(entry) || entry < signal.entryZone.low * 0.5 || entry > signal.entryZone.high * 1.5) {
+      recalcOut.innerHTML = "";
+      recalcOut.appendChild(el("p", { class: "notice notice-error" }, "Entry is far outside the entry zone."));
+      return null;
+    }
+    const result = recalculateTrade({
+      direction: signal.direction,
+      entryPrice: entry,
+      stopLoss: signal.stopLoss,
+      takeProfit: signal.takeProfit,
+      settings: state.settings.risk,
+      minRR: 1, // display-only recalculation; strategy minRR already enforced at scan time
+    });
+    recalcOut.innerHTML = "";
+    if (!result.valid) {
+      recalcOut.appendChild(el("p", { class: "notice notice-error" }, result.reason));
+      return null;
+    }
+    recalcOut.appendChild(
+      el("div", { class: "recalc-grid" }, [
+        el("span", {}, `Position size: ${result.units.toFixed(4)}`),
+        el("span", {}, `Risk: ${fmtUSD(result.dollarRisk)}`),
+        el("span", {}, `Reward: ${fmtUSD(result.potentialReward)}`),
+        el("span", {}, `R:R: 1:${result.rr.toFixed(2)}`),
+      ])
+    );
+    return result;
+  }
+  entryInput.addEventListener("input", recalc);
+  let sizing = recalc();
+
+  modal.body.appendChild(el("p", {}, `Entry zone: ${signal.entryZone.low} – ${signal.entryZone.high}`));
+  modal.body.appendChild(el("label", { class: "field-label" }, "Actual entry price"));
+  modal.body.appendChild(entryInput);
+  modal.body.appendChild(recalcOut);
+
+  const confirmBtn = el("button", { class: "btn btn-primary", onclick: async () => {
+    const latestSizing = recalc();
+    if (!latestSizing) return;
+    try {
+      const trade = await executeTrade({ signal, actualEntry: parseFloat(entryInput.value), sizing: latestSizing, mode: state.tradeMode, timeZone: state.effectiveTimeZone() });
+      alert(`Trade recorded (${state.tradeMode === "live" ? "Live Mode" : "Test Mode"}). Track it in the Journal tab.`);
+      modal.overlay.remove();
+    } catch (e) {
+      alert(e.message);
+    }
+  } }, "Confirm Paper Trade");
+  modal.body.appendChild(confirmBtn);
+
+  document.body.appendChild(modal.overlay);
+}
+
+function buildModal(title) {
+  const overlay = el("div", { class: "modal-overlay", onclick: (e) => { if (e.target === overlay) overlay.remove(); } });
+  const box = el("div", { class: "modal-box" });
+  box.appendChild(el("div", { class: "modal-header" }, [el("h3", {}, title), el("button", { class: "modal-close", onclick: () => overlay.remove() }, "✕")]));
+  const body = el("div", { class: "modal-body" });
+  box.appendChild(body);
+  overlay.appendChild(box);
+  return { overlay, body };
+}
+
+function friendlyErrorMessage(e) {
+  return e?.userMessage || "Something went wrong retrieving market data. Please wait a moment and try again.";
+}
+
+// -------------------------------------------------------------- JOURNAL
+export async function renderJournal(root, state) {
+  root.innerHTML = "";
+  const trades = (await getAll("trades")).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  root.appendChild(el("div", { class: "section-title" }, `Journal (${trades.length} trades)`));
+  if (!trades.length) {
+    root.appendChild(el("p", { class: "empty-state" }, "No trades yet. Run CHECK FOR TRADE and paper trade a signal to start your journal."));
+    return;
+  }
+  const list = el("div", { class: "trade-list" });
+  trades.forEach((t) => list.appendChild(tradeRow(t)));
+  root.appendChild(list);
+}
+
+// -------------------------------------------------------------- DAILY SUMMARY
+export async function renderDailySummary(root, state) {
+  root.innerHTML = "";
+  const summary = await getDailySummary({ timeZone: state.effectiveTimeZone(), startingBalance: state.settings.risk.accountBalance, mode: "all" });
+
+  root.appendChild(el("div", { class: "card headline-card" }, [el("div", { class: "headline-label" }, "TODAY"), el("div", { class: "headline-text" }, summary.headline)]));
+  root.appendChild(
+    el("div", { class: "balance-row" }, [
+      el("span", {}, `Starting: ${fmtUSD(summary.startingBalance)}`),
+      el("span", {}, `Ending: ${fmtUSD(summary.endingBalance)}`),
+    ])
+  );
+
+  root.appendChild(el("div", { class: "section-title" }, "Signal Funnel"));
+  root.appendChild(funnelBar(summary.funnel));
+
+  root.appendChild(el("div", { class: "section-title" }, "Metrics"));
+  const m = summary.metrics;
+  root.appendChild(
+    el("div", { class: "stats-grid" }, [
+      statCard("Net P&L", fmtUSD(m.netPnL)),
+      statCard("Win %", m.winPct === null ? "N/A" : fmtPct(m.winPct)),
+      statCard("Avg Win", m.avgWin === null ? "—" : fmtUSD(m.avgWin)),
+      statCard("Avg Loss", m.avgLoss === null ? "—" : fmtUSD(m.avgLoss)),
+      statCard("Profit Factor", m.profitFactor === null ? "—" : m.profitFactor === Infinity ? "∞" : m.profitFactor.toFixed(2)),
+      statCard("Expectancy", m.expectancy === null ? "—" : fmtUSD(m.expectancy)),
+      statCard("Avg R", m.avgR === null ? "—" : `${m.avgR}R`),
+      statCard("Max Drawdown", fmtUSD(m.maxDrawdown)),
+    ])
+  );
+
+  root.appendChild(el("div", { class: "section-title" }, "Strategy Breakdown"));
+  root.appendChild(breakdownTable(m.breakdownByStrategy));
+  root.appendChild(el("div", { class: "section-title" }, "Market Breakdown"));
+  root.appendChild(breakdownTable(m.breakdownByMarket));
+  root.appendChild(el("div", { class: "section-title" }, "Session Breakdown"));
+  root.appendChild(breakdownTable(m.breakdownBySession));
+
+  root.appendChild(el("div", { class: "section-title" }, "Today's Trades"));
+  if (!summary.trades.length) root.appendChild(el("p", { class: "empty-state" }, "No trades yet today."));
+  const list = el("div", { class: "trade-list" });
+  summary.trades.forEach((t) => list.appendChild(tradeRow(t)));
+  root.appendChild(list);
+}
+
+function breakdownTable(rows) {
+  if (!rows.length) return el("p", { class: "empty-state" }, "No completed trades yet.");
+  const table = el("table", { class: "breakdown-table" });
+  table.appendChild(
+    el("tr", {}, ["Name", "Trades", "Win %", "P&L", "Avg R"].map((h) => el("th", {}, h)))
+  );
+  rows.forEach((r) => {
+    table.appendChild(
+      el("tr", {}, [
+        el("td", {}, r.key),
+        el("td", {}, String(r.trades)),
+        el("td", {}, r.winPct === null ? "N/A" : `${r.winPct}%`),
+        el("td", {}, fmtUSD(r.pnl)),
+        el("td", {}, r.avgR === null ? "—" : `${r.avgR}R`),
+      ])
+    );
+  });
+  return table;
+}
+
+// -------------------------------------------------------------- PERFORMANCE DASHBOARD
+const TIME_FILTERS = [
+  ["today", "Today", 1],
+  ["7d", "7 Days", 7],
+  ["30d", "30 Days", 30],
+  ["90d", "90 Days", 90],
+  ["6m", "6 Months", 182],
+  ["1y", "1 Year", 365],
+  ["all", "All Time", null],
+];
+
+export async function renderPerformance(root, state) {
+  root.innerHTML = "";
+  const filter = state.performanceFilter || "30d";
+
+  const tabs = el(
+    "div",
+    { class: "sub-tabs wrap" },
+    TIME_FILTERS.map(([key, label]) => el("button", { class: `sub-tab ${key === filter ? "active" : ""}`, onclick: () => { state.performanceFilter = key; renderPerformance(root, state); } }, label))
+  );
+  root.appendChild(tabs);
+
+  const allTrades = await getAll("trades");
+  const days = TIME_FILTERS.find(([k]) => k === filter)[2];
+  const cutoff = days ? Date.now() - days * 86400000 : null;
+  const filtered = allTrades.filter((t) => !cutoff || new Date(t.createdAt).getTime() >= cutoff);
+
+  const perf = computePerformance({ trades: filtered, startingBalance: state.settings.risk.accountBalance });
+
+  root.appendChild(
+    el("div", { class: "stats-grid" }, [
+      statCard("Trades", perf.tradesTaken),
+      statCard("Win %", perf.winPct === null ? "N/A" : fmtPct(perf.winPct)),
+      statCard("Net P&L", fmtUSD(perf.netPnL)),
+      statCard("Profit Factor", perf.profitFactor === null ? "—" : perf.profitFactor === Infinity ? "∞" : perf.profitFactor.toFixed(2)),
+      statCard("Expectancy", perf.expectancy === null ? "—" : fmtUSD(perf.expectancy)),
+      statCard("Avg R", perf.avgR === null ? "—" : `${perf.avgR}R`),
+      statCard("Max Drawdown", fmtUSD(perf.maxDrawdown)),
+      statCard("Win/Loss Streak", `W${perf.longestWinStreak} / L${perf.longestLossStreak}`),
+    ])
+  );
+
+  root.appendChild(el("div", { class: "section-title" }, "Equity Curve"));
+  root.appendChild(equityCurveSVG(perf.equityCurve));
+
+  root.appendChild(el("div", { class: "section-title" }, "Strategy Results"));
+  root.appendChild(breakdownTable(perf.breakdownByStrategy));
+  root.appendChild(el("div", { class: "section-title" }, "Market Results"));
+  root.appendChild(breakdownTable(perf.breakdownByMarket));
+}
+
+function equityCurveSVG(curve) {
+  if (curve.length < 2) return el("p", { class: "empty-state" }, "Not enough resolved trades yet for an equity curve.");
+  const w = 320;
+  const h = 120;
+  const values = curve.map((p) => p.balance);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const points = curve.map((p, i) => `${(i / (curve.length - 1)) * w},${h - ((p.balance - min) / range) * h}`).join(" ");
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.setAttribute("class", "equity-svg");
+  const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+  polyline.setAttribute("points", points);
+  polyline.setAttribute("fill", "none");
+  polyline.setAttribute("stroke", "var(--accent)");
+  polyline.setAttribute("stroke-width", "2");
+  svg.appendChild(polyline);
+  return svg;
+}
+
+// -------------------------------------------------------------- BACKTEST
+export async function renderBacktest(root, state) {
+  root.innerHTML = "";
+  root.appendChild(el("div", { class: "section-title" }, "Backtest"));
+
+  const marketSelect = el("select", { class: "input" }, ["us_stocks", "forex", "crypto"].map((m) => el("option", { value: m }, labelForMarket(m))));
+  const symbolInput = el("input", { class: "input", value: "BTCUSDT", placeholder: "Symbol" });
+  const strategyChecks = el("div", { class: "strategy-checks" });
+
+  function refreshStrategies() {
+    strategyChecks.innerHTML = "";
+    strategiesForMarket(marketSelect.value).forEach((s) => {
+      const id = `bt-${s.id}`;
+      const label = el("label", { class: "checkbox-row" }, [el("input", { type: "checkbox", id, value: s.id, checked: "checked" }), ` ${s.name}`]);
+      strategyChecks.appendChild(label);
+    });
+  }
+  marketSelect.addEventListener("change", refreshStrategies);
+  refreshStrategies();
+
+  const runBtn = el("button", { class: "btn btn-primary", onclick: runIt }, "Run Backtest");
+  const resultsWrap = el("div", { class: "backtest-results" });
+
+  root.appendChild(el("label", { class: "field-label" }, "Market"));
+  root.appendChild(marketSelect);
+  root.appendChild(el("label", { class: "field-label" }, "Symbol"));
+  root.appendChild(symbolInput);
+  root.appendChild(el("label", { class: "field-label" }, "Strategies"));
+  root.appendChild(strategyChecks);
+  root.appendChild(runBtn);
+  root.appendChild(resultsWrap);
+
+  async function runIt() {
+    resultsWrap.innerHTML = "";
+    runBtn.disabled = true;
+    runBtn.textContent = "Running…";
+    try {
+      const market = marketSelect.value;
+      const symbol = symbolInput.value.trim().toUpperCase();
+      const strategyIds = [...strategyChecks.querySelectorAll("input:checked")].map((i) => i.value);
+      const timeframe = market === "us_stocks" ? "15m" : "1h";
+      const data = await getMarketData({ symbol, market, timeframe, limit: 500, apiKeys: state.settings.apiKeys, forceProviderId: state.settings.dataProviderOverride?.[market] });
+      if (!data.candles || data.candles.length < 65) {
+        resultsWrap.appendChild(el("div", { class: "notice notice-error" }, "Not enough historical candles available for this symbol/timeframe."));
+        return;
+      }
+      const result = runBacktest({ candles: data.candles, strategyIds, market, symbol, riskSettings: state.settings.risk });
+      if (result.error) {
+        resultsWrap.appendChild(el("div", { class: "notice notice-error" }, result.error));
+        return;
+      }
+      resultsWrap.appendChild(dataStatusBadge(data.isDemo ? "DEMO" : data.status));
+      resultsWrap.appendChild(el("div", { class: "section-title" }, `In-Sample (${result.inSample.count} trades)`));
+      resultsWrap.appendChild(backtestStatsBlock(result.inSample.performance));
+      resultsWrap.appendChild(el("div", { class: "section-title" }, `Out-of-Sample (${result.outOfSample.count} trades)`));
+      resultsWrap.appendChild(backtestStatsBlock(result.outOfSample.performance));
+      resultsWrap.appendChild(el("div", { class: "section-title" }, "Caveats"));
+      resultsWrap.appendChild(el("ul", { class: "caveat-list" }, result.caveats.map((c) => el("li", {}, c))));
+    } catch (e) {
+      resultsWrap.appendChild(el("div", { class: "notice notice-error" }, friendlyErrorMessage(e)));
+    } finally {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run Backtest";
+    }
+  }
+}
+
+function backtestStatsBlock(perf) {
+  return el("div", { class: "stats-grid" }, [
+    statCard("Win %", perf.winPct === null ? "N/A" : fmtPct(perf.winPct)),
+    statCard("Net P&L", fmtUSD(perf.netPnL)),
+    statCard("Profit Factor", perf.profitFactor === null ? "—" : perf.profitFactor === Infinity ? "∞" : perf.profitFactor.toFixed(2)),
+    statCard("Expectancy", perf.expectancy === null ? "—" : fmtUSD(perf.expectancy)),
+    statCard("Avg R", perf.avgR === null ? "—" : `${perf.avgR}R`),
+    statCard("Max Drawdown", fmtUSD(perf.maxDrawdown)),
+  ]);
+}
+
+// -------------------------------------------------------------- STRATEGY LAB
+export async function renderStrategyLab(root, state) {
+  root.innerHTML = "";
+  root.appendChild(el("div", { class: "section-title" }, "Strategy Lab"));
+  root.appendChild(el("p", { class: "disclaimer-inline" }, "Factual performance per strategy from your recorded trades. No strategy is labeled \"best.\""));
+  const rows = await getStrategyLab({ startingBalance: state.settings.risk.accountBalance });
+  const container = el("div", { class: "strategy-lab-list" });
+  rows.forEach((r) => {
+    container.appendChild(
+      el("div", { class: "card strategy-lab-card" }, [
+        el("div", { class: "section-title" }, r.name),
+        el("p", { class: "focus-reason" }, r.description),
+        el("div", { class: "stats-grid" }, [
+          statCard("Trades", r.trades),
+          statCard("Win %", r.winPct === null ? "N/A" : `${r.winPct}%`),
+          statCard("Profit Factor", r.profitFactor === null ? "—" : r.profitFactor === Infinity ? "∞" : r.profitFactor.toFixed(2)),
+          statCard("Avg R", r.avgR === null ? "—" : `${r.avgR}R`),
+          statCard("Max Drawdown", fmtUSD(r.maxDrawdown)),
+        ]),
+      ])
+    );
+  });
+  root.appendChild(container);
+}
+
+// -------------------------------------------------------------- SETTINGS
+export async function renderSettings(root, state) {
+  root.innerHTML = "";
+  const s = state.settings;
+
+  root.appendChild(el("div", { class: "section-title" }, "Risk Management"));
+  root.appendChild(numberField("Account Balance ($)", s.risk.accountBalance, (v) => (s.risk.accountBalance = v)));
+  root.appendChild(numberField("Risk per Trade (%)", s.risk.riskPercent, (v) => (s.risk.riskPercent = v)));
+  root.appendChild(numberField("Default R:R", s.risk.defaultRR, (v) => (s.risk.defaultRR = v)));
+  root.appendChild(numberField("Max R:R", s.risk.maxRR, (v) => (s.risk.maxRR = v)));
+
+  root.appendChild(el("div", { class: "section-title" }, "Timezone"));
+  root.appendChild(
+    el("label", { class: "checkbox-row" }, [
+      el("input", { type: "checkbox", checked: s.useDeviceTimeZone ? "checked" : null, onchange: (e) => (s.useDeviceTimeZone = e.target.checked) }),
+      " Use device timezone",
+    ])
+  );
+
+  root.appendChild(el("div", { class: "section-title" }, "Data Providers"));
+  root.appendChild(el("p", { class: "focus-reason" }, "Crypto uses Binance's free public API (no key). US Stocks/Forex use Twelve Data — enter your own free API key below (never stored in source code, only in your browser's local database)."));
+  root.appendChild(textField("Twelve Data API Key", s.apiKeys.twelvedata, (v) => (s.apiKeys.twelvedata = v)));
+  root.appendChild(
+    el("a", { href: "https://twelvedata.com/pricing", target: "_blank", class: "link" }, "Get a free Twelve Data API key →")
+  );
+
+  root.appendChild(el("div", { class: "section-title" }, "Test Mode Trades/Day"));
+  const testModeSelect = el(
+    "select",
+    { class: "input", onchange: (e) => (s.testModeTradesPerDay = parseInt(e.target.value, 10)) },
+    TEST_MODE_OPTIONS.map((n) => el("option", { value: n, selected: n === s.testModeTradesPerDay ? "selected" : null }, String(n)))
+  );
+  root.appendChild(testModeSelect);
+
+  root.appendChild(el("div", { class: "section-title" }, "Export / Import"));
+  root.appendChild(el("button", { class: "btn", onclick: async () => downloadBlob(await exportJSON(), `trading-data-${todayKey()}.json`) }, "Export JSON"));
+  root.appendChild(el("button", { class: "btn", onclick: async () => downloadBlob(await exportTradesCSV(), `trades-${todayKey()}.csv`) }, "Export Trades CSV"));
+  const importInput = el("input", { type: "file", accept: "application/json", onchange: async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const text = await file.text();
+    await importFromJSON(text, { merge: true });
+    alert("Import complete.");
+  } });
+  root.appendChild(el("label", { class: "field-label" }, "Import JSON backup"));
+  root.appendChild(importInput);
+
+  const saveBtn = el("button", { class: "btn btn-primary", onclick: () => state.persistSettings() }, "Save Settings");
+  root.appendChild(saveBtn);
+}
+
+function numberField(label, value, onChange) {
+  return el("div", { class: "field" }, [
+    el("label", { class: "field-label" }, label),
+    el("input", { class: "input", type: "number", value, oninput: (e) => onChange(parseFloat(e.target.value)) }),
+  ]);
+}
+function textField(label, value, onChange) {
+  return el("div", { class: "field" }, [
+    el("label", { class: "field-label" }, label),
+    el("input", { class: "input", type: "text", value: value || "", oninput: (e) => onChange(e.target.value) }),
+  ]);
+}
