@@ -3,7 +3,7 @@ import { el, signalCard, statCard, funnelBar, tradeRow, dataStatusBadge } from "
 import { computeMarketFocus, assessTradingWindow } from "../marketFocus.js";
 import { formatClock, formatCountdownHMS, computeKeySessionCountdowns } from "../timezone.js";
 import { scanMarket, DEFAULT_WATCHLISTS } from "../scanner.js";
-import { getLiveModeStatus, executeTrade, markSignalMissed, saveSignal, TEST_MODE_OPTIONS, checkAndResolveOpenTrades } from "../paperTrading.js";
+import { getLiveModeStatus, executeTrade, markSignalMissed, saveSignal, TEST_MODE_OPTIONS } from "../paperTrading.js";
 import { recalculateTrade } from "../risk.js";
 import { getDailySummary } from "../dailySummary.js";
 import { getAll, put, remove } from "../db.js";
@@ -20,10 +20,12 @@ import { fmtUSD, fmtPct, todayKey, uid } from "../utils.js";
 // -------------------------------------------------------------- HOME
 export async function renderHome(root, state) {
   root.innerHTML = "";
-  await checkAndResolveOpenTrades(state); // resolve any trade that has actually hit TP/SL since we last checked
   const tz = state.effectiveTimeZone();
   const liveStatus = await getLiveModeStatus(tz);
   const summary = await getDailySummary({ timeZone: tz, startingBalance: state.settings.risk.accountBalance, mode: "live" });
+  const allTrades = await getAll("trades");
+  const liveTrades = allTrades.filter((t) => t.mode === "live");
+  const livePerf = computePerformance({ trades: liveTrades, startingBalance: state.settings.risk.accountBalance });
 
   // ---- Countdown hero (US Stocks Regular + Forex New York, live to the second) ----
   const countdownHero = el("div", { class: "card countdown-hero" });
@@ -71,7 +73,9 @@ export async function renderHome(root, state) {
 
   // ---- Stats ----
   const statsGrid = el("div", { class: "stats-grid" }, [
-    statCard("Account Balance", fmtUSD(state.settings.risk.accountBalance)),
+    statCard("Account Balance", fmtUSD(livePerf.endingBalance), `${liveTrades.filter((t) => t.status === "WIN" || t.status === "LOSS" || t.status === "AMBIGUOUS").length} closed trades · tap to view`, () =>
+      openBalanceModal(allTrades, state)
+    ),
     statCard("Today's P&L", fmtUSD(summary.metrics.netPnL)),
     statCard("Today's Win %", summary.metrics.winPct === null ? "N/A" : fmtPct(summary.metrics.winPct)),
     statCard("Live Mode", liveStatus.available ? "Available" : "Completed", liveStatus.available ? "1 trade available today" : liveStatus.reason.replace(/_/g, " ")),
@@ -105,6 +109,25 @@ function dataSourcesCard(state) {
     card.appendChild(el("button", { class: "btn btn-primary", style: "margin-top:10px;width:100%", onclick: () => state.goToSettings() }, "Add free API key for real Stocks/Forex data →"));
   }
   return card;
+}
+
+function openBalanceModal(allTrades, state) {
+  const modal = buildModal("All Trades");
+  modal.body.appendChild(
+    el("p", { class: "focus-reason" }, "Every trade ever recorded, most recent first. Filter by mode or date range, and load more 10 at a time.")
+  );
+  const container = el("div", {});
+  modal.body.appendChild(container);
+  const sorted = [...allTrades].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  renderTradeLogBrowser(container, sorted, {
+    modeOptions: [
+      { value: "all", label: "All Modes" },
+      { value: "live", label: "Live Mode" },
+      { value: "test", label: "Test Mode" },
+    ],
+    getMode: (t) => t.mode,
+  });
+  document.body.appendChild(modal.overlay);
 }
 
 function labelForMarket(m) {
@@ -461,11 +484,117 @@ export async function renderOthers(root, state) {
   if (item) await item.render(subRoot, state);
 }
 
+// -------------------------------------------------------------- REUSABLE TRADE LOG BROWSER
+// Used by Journal, the Home "Account Balance" drill-down, and Backtest's
+// individual-trade list — one filterable (date range + mode), paginated
+// (10 at a time) trade list, so all three stay visually and behaviorally
+// consistent instead of three separate one-off implementations.
+function renderTradeLogBrowser(container, allTrades, options = {}) {
+  const pageSize = options.pageSize || 10;
+  const modeOptions = options.modeOptions || null; // [{value, label}] or null to omit the filter
+  const getMode = options.getMode || (() => "all");
+  const rowRenderer = options.rowRenderer || ((t) => tradeRow(t, t.__live || null));
+  const emptyMessage = options.emptyMessage || "No trades match these filters.";
+
+  let modeFilter = "all";
+  let dateFrom = null;
+  let dateTo = null;
+  let visibleCount = pageSize;
+
+  const controls = el("div", { class: "tradelog-controls" });
+  if (modeOptions) {
+    controls.appendChild(
+      el(
+        "select",
+        {
+          class: "input tradelog-mode-select",
+          onchange: (e) => {
+            modeFilter = e.target.value;
+            visibleCount = pageSize;
+            refresh();
+          },
+        },
+        modeOptions.map((o) => el("option", { value: o.value }, o.label))
+      )
+    );
+  }
+  controls.appendChild(
+    el("div", { class: "tradelog-date-row" }, [
+      el("label", { class: "field-label" }, "From"),
+      el("input", {
+        type: "date",
+        class: "input tradelog-date",
+        onchange: (e) => {
+          dateFrom = e.target.value || null;
+          visibleCount = pageSize;
+          refresh();
+        },
+      }),
+      el("label", { class: "field-label" }, "To"),
+      el("input", {
+        type: "date",
+        class: "input tradelog-date",
+        onchange: (e) => {
+          dateTo = e.target.value || null;
+          visibleCount = pageSize;
+          refresh();
+        },
+      }),
+    ])
+  );
+
+  const listWrap = el("div", { class: "trade-list" });
+  const loadMoreWrap = el("div", { class: "tradelog-loadmore" });
+
+  function filteredTrades() {
+    return allTrades.filter((t) => {
+      if (modeFilter !== "all" && getMode(t) !== modeFilter) return false;
+      const d = (t.createdAt || "").slice(0, 10);
+      if (dateFrom && d < dateFrom) return false;
+      if (dateTo && d > dateTo) return false;
+      return true;
+    });
+  }
+
+  function refresh() {
+    const rows = filteredTrades();
+    listWrap.innerHTML = "";
+    if (!rows.length) {
+      listWrap.appendChild(el("p", { class: "empty-state" }, emptyMessage));
+    } else {
+      rows.slice(0, visibleCount).forEach((t) => listWrap.appendChild(rowRenderer(t)));
+    }
+    loadMoreWrap.innerHTML = "";
+    if (rows.length > visibleCount) {
+      const remaining = rows.length - visibleCount;
+      loadMoreWrap.appendChild(
+        el(
+          "button",
+          {
+            class: "btn",
+            onclick: () => {
+              visibleCount += pageSize;
+              refresh();
+            },
+          },
+          `Load ${Math.min(pageSize, remaining)} more (${remaining} left)`
+        )
+      );
+    }
+  }
+
+  container.appendChild(controls);
+  container.appendChild(listWrap);
+  container.appendChild(loadMoreWrap);
+  refresh();
+
+  // Exposed so callers can patch trade objects in place (e.g. once a live
+  // price arrives) and re-render without losing filter/pagination state.
+  return { refresh, listWrap };
+}
+
 // -------------------------------------------------------------- JOURNAL
 export async function renderJournal(root, state) {
-  root.innerHTML = "";
-  root.appendChild(el("p", { class: "loading-inline" }, "Checking open trades against current prices…"));
-  await checkAndResolveOpenTrades(state); // resolve anything that has actually hit TP/SL since we last checked
   root.innerHTML = "";
   const trades = (await getAll("trades")).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
@@ -475,16 +604,25 @@ export async function renderJournal(root, state) {
     return;
   }
 
-  const list = el("div", { class: "trade-list" });
-  trades.forEach((t) => list.appendChild(tradeRow(t)));
-  root.appendChild(list);
+  const listContainer = el("div", {});
+  root.appendChild(listContainer);
+  const browser = renderTradeLogBrowser(listContainer, trades, {
+    modeOptions: [
+      { value: "all", label: "All Modes" },
+      { value: "live", label: "Live Mode" },
+      { value: "test", label: "Test Mode" },
+    ],
+    getMode: (t) => t.mode,
+    emptyMessage: "No trades match these filters.",
+  });
 
   // Fetch current price for every OPEN trade's symbol (deduped by symbol+market) and
   // fill in current price + unrealized P&L once it lands, without blocking the initial render.
+  // Patches trade objects in place (by id) so re-rendering never depends on DOM index/order,
+  // which stays correct regardless of the browser's own filtering/pagination state.
   const openTrades = trades.filter((t) => t.status === "OPEN");
   if (!openTrades.length) return;
 
-  const rows = [...list.children];
   const uniqueKeys = [...new Set(openTrades.map((t) => `${t.market}:${t.symbol}`))];
   await Promise.all(
     uniqueKeys.map(async (key) => {
@@ -506,14 +644,14 @@ export async function renderJournal(root, state) {
         price = null;
       }
       if (price === null) return;
-      trades.forEach((t, idx) => {
+      trades.forEach((t) => {
         if (t.status !== "OPEN" || `${t.market}:${t.symbol}` !== key) return;
         const risk = Math.abs(t.entryPrice - t.stopLoss);
         const priceDelta = t.direction === "long" ? price - t.entryPrice : t.entryPrice - price;
         const distanceToTP = t.takeProfit !== null && t.takeProfit !== undefined ? Math.abs(t.takeProfit - price) : null;
         const distanceToSL = Math.abs(t.stopLoss - price);
         const paceMs = estimatePaceMs(distanceToTP, atrVal, timeframeMs);
-        const live = {
+        t.__live = {
           currentPrice: price,
           unrealizedPnl: priceDelta * t.positionSize,
           unrealizedR: risk > 0 ? priceDelta / risk : null,
@@ -521,18 +659,15 @@ export async function renderJournal(root, state) {
           distanceToSL,
           paceMs,
         };
-        const freshRow = tradeRow(t, live);
-        rows[idx].replaceWith(freshRow);
-        rows[idx] = freshRow;
       });
     })
   );
+  browser.refresh();
 }
 
 // -------------------------------------------------------------- DAILY SUMMARY
 export async function renderDailySummary(root, state) {
   root.innerHTML = "";
-  await checkAndResolveOpenTrades(state); // resolve any trade that has actually hit TP/SL since we last checked
   const summary = await getDailySummary({ timeZone: state.effectiveTimeZone(), startingBalance: state.settings.risk.accountBalance, mode: "all" });
 
   root.appendChild(el("div", { class: "card headline-card" }, [el("div", { class: "headline-label" }, "Today"), el("div", { class: "headline-text" }, summary.headline)]));
@@ -731,6 +866,24 @@ export async function renderBacktest(root, state) {
       resultsWrap.appendChild(backtestStatsBlock(result.inSample.performance));
       resultsWrap.appendChild(el("div", { class: "section-title" }, `Out-of-Sample (${result.outOfSample.count} trades)`));
       resultsWrap.appendChild(backtestStatsBlock(result.outOfSample.performance));
+
+      resultsWrap.appendChild(el("div", { class: "section-title" }, `All Trades (${result.trades.length})`));
+      if (result.trades.length) {
+        const tradeListContainer = el("div", {});
+        resultsWrap.appendChild(tradeListContainer);
+        renderTradeLogBrowser(tradeListContainer, [...result.trades].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)), {
+          modeOptions: [
+            { value: "all", label: "All Trades" },
+            { value: "inSample", label: "In-Sample" },
+            { value: "outOfSample", label: "Out-of-Sample" },
+          ],
+          getMode: (t) => (t.inSample ? "inSample" : "outOfSample"),
+          emptyMessage: "No trades match these filters.",
+        });
+      } else {
+        resultsWrap.appendChild(el("p", { class: "empty-state" }, "No trades were generated over this history — see the aggregate stats above for why (likely: no candidate ever cleared confirmation/risk checks in this window)."));
+      }
+
       resultsWrap.appendChild(el("div", { class: "section-title" }, "Caveats"));
       resultsWrap.appendChild(el("ul", { class: "caveat-list" }, result.caveats.map((c) => el("li", {}, c))));
 
@@ -765,6 +918,7 @@ async function saveBacktestRun(run) {
     outOfSampleCount: run.result.outOfSample.count,
     inSamplePerformance: run.result.inSample.performance,
     outOfSamplePerformance: run.result.outOfSample.performance,
+    trades: run.result.trades, // full per-trade detail, not just the aggregate stats — so saved runs can be reviewed trade-by-trade later too
   };
   await put("backtests", record);
   return record;
@@ -794,12 +948,36 @@ async function renderBacktestHistory(container, state) {
         el("span", {}, `Trades: ${perf.tradesTaken}`),
       ])
     );
-    card.appendChild(
+    const tradeListContainer = el("div", { class: "backtest-history-trades" });
+    const viewBtn = el("button", { class: "btn btn-ghost", onclick: () => {
+      if (tradeListContainer.childElementCount) {
+        tradeListContainer.innerHTML = "";
+        viewBtn.textContent = "View Trades";
+        return;
+      }
+      viewBtn.textContent = "Hide Trades";
+      if (!run.trades || !run.trades.length) {
+        tradeListContainer.appendChild(el("p", { class: "empty-state" }, "This saved run predates per-trade storage, or generated no trades — only the aggregate stats above are available."));
+        return;
+      }
+      renderTradeLogBrowser(tradeListContainer, [...run.trades].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)), {
+        modeOptions: [
+          { value: "all", label: "All Trades" },
+          { value: "inSample", label: "In-Sample" },
+          { value: "outOfSample", label: "Out-of-Sample" },
+        ],
+        getMode: (t) => (t.inSample ? "inSample" : "outOfSample"),
+      });
+    } }, "View Trades");
+    const actionsRow = el("div", { class: "backtest-history-actions" }, [
+      viewBtn,
       el("button", { class: "btn btn-ghost", onclick: async () => {
         await remove("backtests", run.id);
         await renderBacktestHistory(container, state);
-      } }, "Delete")
-    );
+      } }, "Delete"),
+    ]);
+    card.appendChild(actionsRow);
+    card.appendChild(tradeListContainer);
     container.appendChild(card);
   });
 }

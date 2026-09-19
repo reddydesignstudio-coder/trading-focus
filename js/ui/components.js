@@ -123,8 +123,9 @@ function fmtPrice(v) {
   return v >= 100 ? v.toFixed(2) : v.toFixed(v >= 1 ? 4 : 6);
 }
 
-export function statCard(label, value, sub) {
-  return el("div", { class: "stat-card" }, [el("div", { class: "stat-label" }, label), el("div", { class: "stat-value" }, String(value)), sub ? el("div", { class: "stat-sub" }, sub) : null]);
+export function statCard(label, value, sub, onClick) {
+  const attrs = onClick ? { class: "stat-card stat-card-clickable", onclick: onClick, role: "button", tabindex: "0" } : { class: "stat-card" };
+  return el("div", attrs, [el("div", { class: "stat-label" }, label), el("div", { class: "stat-value" }, String(value)), sub ? el("div", { class: "stat-sub" }, sub) : null]);
 }
 
 export function funnelBar(funnel) {
@@ -185,5 +186,5 @@ export function tradeRow(trade, live = null) {
     ])
   );
 
-  return el("div", { class: `trade-row ${statusClass}` }, rows);
+  return el("div", { class: `trade-row ${statusClass}`, "data-trade-id": trade.id }, rows);
 }

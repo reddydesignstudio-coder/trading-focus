@@ -2,6 +2,8 @@
 import { loadSettings, saveSettings, effectiveTimeZone } from "./settings.js";
 import { renderHome, renderScan, renderOthers, renderSettings } from "./ui/views.js";
 import { el } from "./ui/components.js";
+import { checkAndResolveOpenTrades } from "./paperTrading.js";
+import { requirePinUnlock } from "./pinLock.js";
 
 const TABS = [
   { id: "home", label: "Home", render: renderHome },
@@ -46,9 +48,9 @@ const state = {
     state.intervalIds.forEach((id) => clearInterval(id));
     state.intervalIds = [];
   },
+  lastResolutionCheckAt: 0,
 };
 
-const appRoot = document.getElementById("app");
 const navRoot = document.getElementById("nav");
 const contentRoot = document.getElementById("content");
 
@@ -75,9 +77,37 @@ async function setTab(tabId) {
     contentRoot.innerHTML = "";
     contentRoot.appendChild(el("div", { class: "notice notice-error" }, "This screen couldn't be loaded. Please try again."));
   }
+
+  // Trade resolution runs ONCE here, centrally, per navigation — never inside
+  // the view functions themselves. It's fire-and-forget so it never blocks
+  // the page from appearing (this is what was making Home feel slow to
+  // load), and it's throttled to at most once every 10s so rapidly tapping
+  // between tabs doesn't fire a network call on every single tap. If it
+  // actually resolves something AND the user hasn't since navigated away,
+  // the current tab is silently re-rendered so the change shows up without
+  // needing a manual refresh — this is also what fixes trades appearing
+  // resolved on one screen but still "open" on another: every screen was
+  // previously running its own separate, out-of-sync check.
+  const now = Date.now();
+  if (now - state.lastResolutionCheckAt > 10000) {
+    state.lastResolutionCheckAt = now;
+    checkAndResolveOpenTrades(state)
+      .then((result) => {
+        if (result.resolved > 0 && state.currentTab === tabId) {
+          tab.render(contentRoot, state);
+        }
+      })
+      .catch((e) => console.warn("Background trade check failed", e));
+  }
 }
 
 async function boot() {
+  // PIN lock gates everything else — nothing renders until this resolves.
+  // Uses its own overlay appended to <body>, entirely separate from #app's
+  // header/content/nav structure, so nothing here needs those elements to
+  // exist yet (and nothing here destroys them).
+  await requirePinUnlock();
+
   state.settings = await loadSettings();
   const hashTab = window.location.hash.replace("#", "");
   const initialTab = TABS.find((t) => t.id === hashTab) ? hashTab : "home";

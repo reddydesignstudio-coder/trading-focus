@@ -133,6 +133,32 @@ retail strategy guides emphasize that the original 16 didn't cover.)
   favicon, generated from your uploaded artwork.
 - Muted, non-flashy color palette; proper Title Case throughout (no more
   shouting ALL-CAPS UI text).
+- **6-digit PIN lock** — set up once on first launch, required to unlock the
+  app on every subsequent open. A local screen lock only (SHA-256 hash
+  stored, never the plain PIN, no account or server involved) — deters
+  casual access to your device, not real encryption of the underlying data.
+
+## Trade log & balance tracking
+
+- **Account Balance on Home is now live** — computed from your actual Live
+  Mode trade history (starting balance + realized P&L), not a static copy
+  of the Settings value. Tap it to open a paginated (10-at-a-time), filterable
+  (Live/Test/All, date range) list of every trade ever recorded.
+- **Reusable Trade Log Browser** — one filterable, paginated trade-list
+  component used consistently in the Balance drill-down, Journal, and
+  Backtest results, so browsing trades feels and works the same everywhere.
+- **Backtest now shows individual trades**, not just aggregate stats — a
+  compact one-line list per trade (entry, holding time, result, P&L, R),
+  filterable by In-Sample/Out-of-Sample. Saved backtests persist the full
+  trade list, not just summary numbers, so past runs stay fully reviewable.
+- **Centralized, non-blocking trade resolution** — checking open trades
+  against fresh prices now happens in exactly one place (not duplicated
+  across Home/Journal/Today), runs in the background so pages render
+  instantly instead of waiting on it, and silently refreshes the current
+  screen if something actually resolved — this fixed both a real slowness
+  issue and a real inconsistency (a trade could look resolved on one screen
+  and still "open" on another, since each screen was checking independently
+  and out of sync).
 
 ## Testing
 
