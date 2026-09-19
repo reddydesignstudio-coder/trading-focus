@@ -36,6 +36,22 @@ export function sma(values, period) {
   return out;
 }
 
+/** Bollinger Bands: SMA middle band + upper/lower bands at `stdDevMultiplier` standard deviations. */
+export function bollingerBands(values, period = 20, stdDevMultiplier = 2) {
+  const middle = sma(values, period);
+  const upper = new Array(values.length).fill(null);
+  const lower = new Array(values.length).fill(null);
+  for (let i = period - 1; i < values.length; i++) {
+    const window = values.slice(i - period + 1, i + 1);
+    const mean = middle[i];
+    const variance = window.reduce((a, v) => a + (v - mean) ** 2, 0) / period;
+    const sd = Math.sqrt(variance);
+    upper[i] = mean + sd * stdDevMultiplier;
+    lower[i] = mean - sd * stdDevMultiplier;
+  }
+  return { upper, middle, lower };
+}
+
 export function rsi(closes, period = 14) {
   const out = new Array(closes.length).fill(null);
   if (closes.length <= period) return out;
@@ -199,14 +215,36 @@ export function realizedVolatility(closes, period = 20) {
   return out;
 }
 
-/** Bundles all indicators the strategy/confirmation/confidence engines need, aligned by index. */
+/**
+ * Rough, explicitly-non-predictive "typical pace" estimate: given a distance
+ * to a target price and the current ATR (average true-range per bar), how
+ * many bars/how much time would a move of that size typically take at the
+ * recent volatility rate. This is a historical-volatility heuristic, NOT a
+ * prediction of when (or whether) the target will actually be reached —
+ * price can move faster, slower, stall, or reverse at any time.
+ */
+export function estimatePaceMs(distance, atrValue, timeframeMs) {
+  if (distance === null || distance === undefined || !atrValue || atrValue <= 0 || !timeframeMs) return null;
+  const bars = distance / atrValue;
+  return bars * timeframeMs;
+}
+
+/**
+ * Bundles all indicators the strategy/confirmation/confidence engines need,
+ * aligned by index. NOTE: intentionally no EMA200 here — with the 200-candle
+ * fetch limit the live scanner and Journal actually use, a 200-period EMA
+ * would only ever have a single valid data point (right at the last index),
+ * never a usable series, so it was dead weight. If a longer-term trend
+ * context is wanted later, pair a larger `limit` in the data fetch with
+ * adding it back here.
+ */
 export function computeIndicatorSet(candles, sessionKeys = null) {
   const closes = candles.map((c) => c.c);
   const volumes = candles.map((c) => c.v);
   return {
+    ema9: ema(closes, 9),
     ema20: ema(closes, 20),
     ema50: ema(closes, 50),
-    ema200: ema(closes, 200),
     rsi14: rsi(closes, 14),
     macd: macd(closes),
     atr14: atr(candles, 14),
@@ -214,5 +252,6 @@ export function computeIndicatorSet(candles, sessionKeys = null) {
     vwap: sessionVWAP(candles, sessionKeys),
     rvol20: rvol(volumes, 20),
     volatility20: realizedVolatility(closes, 20),
+    bollinger20: bollingerBands(closes, 20, 2),
   };
 }

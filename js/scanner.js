@@ -24,6 +24,7 @@ import { recalculateTrade, DEFAULT_RISK_SETTINGS } from "./risk.js";
 import { runNoTradeFilters } from "./noTrade.js";
 import { getSessionStatus } from "./timezone.js";
 import { uid } from "./utils.js";
+import { explainPlainEnglish } from "./plainEnglish.js";
 
 export const DEFAULT_WATCHLISTS = {
   us_stocks: ["AAPL", "MSFT", "NVDA", "TSLA", "AMD", "AMZN", "META", "GOOGL"],
@@ -31,7 +32,7 @@ export const DEFAULT_WATCHLISTS = {
   crypto: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"],
 };
 
-const TIMEFRAME_BY_MARKET = {
+export const TIMEFRAME_BY_MARKET = {
   us_stocks: "15m",
   forex: "1h",
   crypto: "1h",
@@ -190,6 +191,7 @@ export async function scanSymbol({ symbol, market, riskSettings = DEFAULT_RISK_S
       rejected: noTrade.rejected,
       rejectionReasons: noTrade.reasons,
     };
+    setup.plainEnglish = explainPlainEnglish(setup);
 
     if (noTrade.rejected) {
       rejected.push(setup);
@@ -258,6 +260,9 @@ function inferTriggerCategory(strategyId) {
   if (strategyId.includes("relative_strength")) return "relative_strength";
   if (strategyId.includes("compression")) return "regime";
   if (strategyId.includes("overlap_momentum")) return "trend";
+  if (strategyId.includes("bollinger")) return "support_resistance";
+  if (strategyId.includes("momentum_cross")) return "trend";
+  if (strategyId.includes("gap_and_go")) return "volume";
   return null;
 }
 

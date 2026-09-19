@@ -23,6 +23,9 @@
 import { put, get, getAllByIndex } from "./db.js";
 import { uid, todayKey } from "./utils.js";
 import { DEFAULT_TIMEZONE } from "./timezone.js";
+import { getMarketData } from "./dataProviders/index.js";
+import { resolveAgainstCandles, computeTradeOutcome } from "./tradeResolution.js";
+import { TIMEFRAME_BY_MARKET } from "./scanner.js";
 
 export const LIVE_MODE_DAILY_LIMIT = 1;
 export const TEST_MODE_OPTIONS = [1, 2, 5, 10];
@@ -35,7 +38,11 @@ export async function getTradesForDay(dateKey, mode) {
 export async function getLiveModeStatus(timeZone = DEFAULT_TIMEZONE) {
   const dateKey = todayKey(new Date(), timeZone);
   const trades = await getTradesForDay(dateKey, "live");
-  const completed = trades.filter((t) => t.status === "WIN" || t.status === "LOSS");
+  // AMBIGUOUS counts as "done for the day" too — it fully played out (TP and
+  // SL both fell in one candle with no finer data to tell which came first);
+  // it just doesn't have a determinable win/loss. It should still use up the
+  // day's one trade rather than silently allowing a second.
+  const completed = trades.filter((t) => t.status === "WIN" || t.status === "LOSS" || t.status === "AMBIGUOUS");
   const open = trades.filter((t) => t.status === "OPEN");
 
   if (completed.length >= LIVE_MODE_DAILY_LIMIT) {
@@ -117,6 +124,68 @@ export async function resolveTradeRecord(tradeId, resolution, outcome) {
   trade.resolvedAt = resolution.resolvedAt ? new Date(resolution.resolvedAt).toISOString() : new Date().toISOString();
   await put("trades", trade);
   return trade;
+}
+
+/**
+ * Trade Monitor — the piece that was missing: checks every currently OPEN
+ * trade against real candles since it was entered, and resolves it
+ * (WIN/LOSS/AMBIGUOUS) using the exact same deterministic logic the
+ * backtester already uses (tradeResolution.js). Call this before rendering
+ * any screen that shows trade status (Home, Journal, Today) so a trade that
+ * has actually hit TP/SL doesn't keep sitting there as "OPEN" until someone
+ * happens to re-scan it.
+ *
+ * Fetches one candle series per unique symbol+market among open trades
+ * (not one call per trade) to stay efficient, and only ever resolves a
+ * trade using candles at or after its own entry time.
+ */
+export async function checkAndResolveOpenTrades(state) {
+  const openTrades = await getAllByIndex("trades", "byStatus", "OPEN");
+  if (!openTrades.length) return { checked: 0, resolved: 0 };
+
+  const candlesBySymbol = new Map(); // "market:symbol" -> candles[]
+  let resolved = 0;
+
+  for (const trade of openTrades) {
+    const key = `${trade.market}:${trade.symbol}`;
+    if (!candlesBySymbol.has(key)) {
+      try {
+        const timeframe = TIMEFRAME_BY_MARKET[trade.market];
+        const data = await getMarketData({
+          symbol: trade.symbol,
+          market: trade.market,
+          timeframe,
+          limit: 200,
+          apiKeys: state.settings.apiKeys,
+          forceProviderId: state.settings.dataProviderOverride?.[trade.market],
+        });
+        candlesBySymbol.set(key, data.candles || []);
+      } catch {
+        candlesBySymbol.set(key, []);
+      }
+    }
+    const candles = candlesBySymbol.get(key);
+    if (!candles.length) continue;
+
+    const entryTime = new Date(trade.createdAt).getTime();
+    const candlesSinceEntry = candles.filter((c) => c.t >= entryTime);
+    if (!candlesSinceEntry.length) continue;
+
+    const resolution = resolveAgainstCandles(
+      { direction: trade.direction, entryPrice: trade.entryPrice, stopLoss: trade.stopLoss, takeProfit: trade.takeProfit },
+      candlesSinceEntry
+    );
+    if (resolution.status === "OPEN") continue; // still genuinely open — leave it alone
+
+    const outcome = computeTradeOutcome(
+      { direction: trade.direction, entryPrice: trade.entryPrice, stopLoss: trade.stopLoss, positionSize: trade.positionSize },
+      resolution
+    );
+    await resolveTradeRecord(trade.id, resolution, outcome);
+    resolved += 1;
+  }
+
+  return { checked: openTrades.length, resolved };
 }
 
 /** Marks a qualifying signal the user chose not to act on — tracked separately from trades. */

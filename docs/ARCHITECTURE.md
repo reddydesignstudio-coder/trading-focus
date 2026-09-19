@@ -75,7 +75,7 @@ performance.computePerformance() ← powers Daily Summary / Performance / Strate
 | `structure.js` | Swing/structure/S/R detection |
 | `candlestick.js` | Candlestick pattern detection (confirmation-only) |
 | `regime.js` | Market regime classification |
-| `strategies/*` | 16 independent strategy rule sets |
+| `strategies/*` | 19 independent strategy rule sets |
 | `confirmation.js` | Independent-confirmation counting |
 | `confidence.js` | 100-point setup-quality score |
 | `targetEngine.js` | Structure/ATR-aware TP resolution |

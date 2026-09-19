@@ -3,8 +3,8 @@
 Run with: `npm test` (`node --test tests/*.test.js`), Node v22.
 
 ```
-tests 56
-pass 56
+tests 88
+pass 88
 fail 0
 cancelled 0
 skipped 0
@@ -14,41 +14,52 @@ skipped 0
 
 | File | Focus |
 |---|---|
-| `tests/indicators.test.js` | EMA, SMA, RSI (bounds + edge cases: all-up/all-down), MACD histogram identity, ATR non-negativity, ADX bounded 0-100, session VWAP reset, RVOL spike detection |
-| `tests/risk.test.js` | Max dollar risk (% and override), position sizing math, R:R rejection below minimum, confidence-independence of risk sizing, max-R:R capping (flagged not silently exceeded), wrong-side stop/target rejection |
-| `tests/tradeResolution.test.js` | WIN/LOSS/OPEN determinism, same-candle AMBIGUOUS (never guessed), smaller-timeframe disambiguation, short-trade inverted logic, P&L/R-multiple computation |
-| `tests/performance.test.js` | Win % is `N/A` (not `0%`) with zero completed trades, win % excludes open/ambiguous, net P&L / ending balance, profit factor, expectancy, max drawdown from equity curve, missed signals never count as W/L, per-strategy breakdown excludes open trades |
-| `tests/confidence.test.js` | Weights sum to 100, score never exceeds max, breakdown sums to total, label tiers |
-| `tests/confirmation.test.js` | Minimum-2 enforcement, category de-duplication, zero-evidence candidate fails |
-| `tests/targetEngine.test.js` | Direct level target, structure-capping, rejection instead of forcing unrealistic R:R, ATR-multiple fallback, zero-stop-distance rejection |
-| `tests/timezone.test.js` | DST correctness for New York (EST/EDT) and London (GMT/BST) via `Intl`, weekday session gating, London/NY overlap detection, dead-of-night no-active-session case |
-| `tests/scanner.integration.test.js` | End-to-end `CHECK FOR TRADE` pipeline against demo data for all 3 markets — verifies no throws, well-formed qualifying setups (valid entry zone, confidence 0-100, ≥2 confirmations, R:R ≥1 or null), and that a zero-qualifying result is handled without forcing a count |
+| `indicators.test.js` | EMA, SMA, RSI, MACD, ATR, ADX, session VWAP, RVOL, and the pace-estimate helper |
+| `risk.test.js` | Position sizing, R:R rejection below minimum, target-capping at max R:R, confidence-independence of sizing |
+| `tradeResolution.test.js` | WIN/LOSS/OPEN determinism, same-candle AMBIGUOUS (never guessed), smaller-timeframe disambiguation |
+| `tradeMonitor.test.js` | End-to-end: an OPEN trade whose price has since hit TP/SL actually gets resolved (regression test for the live paper-trading resolution bug) |
+| `performance.test.js` | Win % is `N/A` with zero completed trades, profit factor, expectancy, drawdown, per-strategy breakdown |
+| `confidence.test.js` | 100-point weight total, score bounds, breakdown-sums-to-total, label tiers |
+| `confirmation.test.js` | Minimum-2 enforcement, category de-duplication, Range-regime credit |
+| `targetEngine.test.js` | Structure-capped targets, rejection instead of forcing unrealistic R:R |
+| `timezone.test.js` | DST correctness (NY, London), session gating, overlap detection |
+| `marketFocus.test.js` | The live "Good/Fair/Weak/Closed" trading-window verdict across all three markets and times of day |
+| `dataProviderRotation.test.js` | Automatic fallback from a rate-limited primary Twelve Data key to the backup key, then to demo data if both are limited |
+| `newStrategies.test.js` | Trigger-condition correctness for Bollinger Mean Reversion, Gap and Go, and EMA 9/20 Momentum Cross |
+| `plainEnglish.test.js` | Every registered strategy (all 19) has a real, jargon-free, direction-aware plain-English explanation — not the generic fallback |
+| `paperTrading.test.js` | Live Mode refuses to execute a trade sourced from demo data |
+| `scanner.integration.test.js` | End-to-end `CHECK FOR TRADE` pipeline against demo data for all 3 markets — well-formed qualifying setups, zero-qualifying handled without forcing a count |
 
-## Notable bug caught and fixed during testing
+## Notable things caught during testing (kept here as a running record)
 
-The initial ADX implementation reused the same "Wilder sum-style smoothing"
-function used for TR/+DM/-DM to also smooth DX into ADX. That produces
-unbounded values (ADX going above 100) because ADX must be a **moving
-average** of DX, not an accumulating sum. Fixed by adding a dedicated
-`wilderAverage()` function (seeded simple average, then Wilder-smoothed
-average) — confirmed by `tests/indicators.test.js`'s
-`"adx produces values between 0 and 100 once seeded"` test, which failed
-before the fix and passes after.
+- **ADX unbounded above 100** — an early implementation reused sum-style
+  Wilder smoothing (meant for TR/±DM) to also smooth DX into ADX. Fixed with
+  a dedicated `wilderAverage()`; caught by `indicators.test.js`.
+- **R:R silently exceeding the configured maximum** — `recalculateTrade()`
+  flagged an over-max R:R but never actually pulled the take-profit in, so a
+  structural target 7-8x the risk away could display as "1:7.48" even with a
+  1:3 max configured. Fixed to actually cap the take-profit price; caught by
+  `risk.test.js`.
+- **Open trades never resolving** — the trade-resolution engine
+  (`tradeResolution.js`) was fully correct and tested, but was only ever
+  wired into the Backtester — nothing checked live paper trades against
+  fresh prices, so a trade that had genuinely hit TP/SL just stayed "OPEN"
+  forever. Fixed with `checkAndResolveOpenTrades()`, wired into Home,
+  Journal, and Today; caught (and now regression-tested) by
+  `tradeMonitor.test.js`.
+- **Range regime never earning "regime" confirmation credit** — found while
+  adding Bollinger Mean Reversion: `checkRegime()` only credited
+  trend/breakout regimes, so every existing range-fade strategy (Liquidity
+  Sweep, S/R Rejection) was already silently losing a confirmation category
+  it should have gotten. Fixed for all range-fade strategies at once.
 
 ## Manual / structural verification also performed
 
-- `node --check` on every `.js` file in `js/` — all pass (no syntax errors).
-- All `<script src>` / `<link href>` references in `index.html` verified to
-  point at files that exist in the repo.
-- Full acceptance-test chain (see `README.md` / `docs/ARCHITECTURE.md` data
-  flow diagram) exercised via `tests/scanner.integration.test.js` end-to-end
-  against demo data, covering: session/time read → market focus → scan →
-  indicators/structure/regime → strategy evaluation → confirmation →
-  confidence → entry zone/target → risk/sizing → no-trade filtering →
-  qualifying-setup output. The remaining links (paper trade → monitor →
-  resolve → journal → daily summary → performance) are exercised by the
-  paper-trading, trade-resolution, and performance unit tests and are wired
-  together in `js/ui/views.js`; they require a browser (IndexedDB) to run
-  live, so were verified by code review + the underlying unit tests rather
-  than a browser-automation test in this environment (no headless browser
-  available in the sandboxed build environment).
+- `node --check` on every `.js` file — no syntax errors.
+- A custom import/export consistency script verifies every named import
+  actually matches a named export in its target file, across the whole
+  codebase, on every change.
+- Full acceptance-test chain exercised end-to-end against demo data via
+  `scanner.integration.test.js`; the paper-trade → monitor → resolve →
+  journal → daily summary → performance chain is covered by the
+  paper-trading, trade-monitor, and performance unit tests together.

@@ -85,6 +85,30 @@ function friendlyError(err) {
 }
 
 /**
+ * Tries each configured Twelve Data key in order (primary, then optional
+ * backup). Only moves to the next key when the current one comes back
+ * specifically RATE_LIMIT'd — a genuine error on the primary key is
+ * returned immediately rather than burning the backup key on the same
+ * underlying problem.
+ */
+async function callTwelveDataWithRotation({ symbol, timeframe, limit, apiKeys, signal }) {
+  const keys = [apiKeys.twelvedata, apiKeys.twelvedataBackup].filter((k) => k && k.trim());
+  if (keys.length === 0) {
+    return twelveDataProvider.getCandles({ symbol, timeframe, limit, apiKey: undefined, signal });
+  }
+  let lastResult = null;
+  for (let i = 0; i < keys.length; i++) {
+    const result = await twelveDataProvider.getCandles({ symbol, timeframe, limit, apiKey: keys[i], signal });
+    const rateLimited = result.status === "UNAVAILABLE" && result.reason === "RATE_LIMIT";
+    if (!rateLimited) {
+      return { ...result, usedBackupKey: i > 0 };
+    }
+    lastResult = result; // this key is rate-limited — try the next one, if any
+  }
+  return lastResult; // every available key came back rate-limited
+}
+
+/**
  * Main entry point. Options:
  *   symbol, market, timeframe, limit, forceProviderId, apiKeys ({twelvedata: 'xxx'}),
  *   allowDemoFallback (bool), signal (AbortSignal)
@@ -116,7 +140,7 @@ export async function getMarketData(opts) {
         recordCall(providerId);
         const result =
           providerId === "twelvedata"
-            ? await provider.getCandles({ symbol, timeframe, limit, apiKey: apiKeys.twelvedata, signal })
+            ? await callTwelveDataWithRotation({ symbol, timeframe, limit, apiKeys, signal })
             : await provider.getCandles({ symbol, timeframe, limit, signal });
 
         if (result.status === "UNAVAILABLE" && allowDemoFallback && providerId !== "demo") {

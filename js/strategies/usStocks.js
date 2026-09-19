@@ -1,5 +1,6 @@
 // js/strategies/usStocks.js
 import { nearestLevel, lastSwingLow, lastSwingHigh, priorRange, makeCandidate } from "./common.js";
+import { localParts } from "../timezone.js";
 
 export const openingRangeBreakout = {
   id: "orb_volume",
@@ -339,4 +340,121 @@ export const relativeStrengthBreakout = {
   },
 };
 
-export const US_STOCK_STRATEGIES = [openingRangeBreakout, breakoutVolume, breakoutRetest, trendPullback, vwapReclaim, relativeStrengthBreakout];
+export const bollingerMeanReversion = {
+  id: "bollinger_mean_reversion_us",
+  name: "Bollinger Band Mean Reversion",
+  description: "Fades a touch of the outer Bollinger Band back toward the middle band — a range-bound counterpart to the trend strategies above, added because Bollinger mean reversion is one of the most widely used range setups and wasn't covered.",
+  market: "us_stocks",
+  applicableRegime: ["Range"],
+  timeframe: "15m",
+  minRR: 1.5,
+  entryConditions: "Price touches or pierces the lower/upper Bollinger Band (20-period, 2 standard deviations) while the market is in a Range regime (not trending).",
+  confirmationConditions: "Rejection wick at the touched band; regime confirms Range.",
+  stopLogic: "Just beyond the touched band.",
+  targetLogic: "The middle band (20-period moving average) — a conservative, structural mean-reversion target.",
+  invalidations: "Close beyond the touched band — the range is breaking, not holding.",
+  evaluate(ctx) {
+    if (ctx.regimeResult.regime !== "Range") return null; // by design, only fades within a genuine range
+    const i = ctx.candles.length - 1;
+    const lastC = ctx.candles[i];
+    const { upper, middle, lower } = ctx.indicators.bollinger20;
+    if (upper[i] === null || lower[i] === null) return null;
+
+    if (lastC.l <= lower[i] && lastC.c > lower[i]) {
+      return makeCandidate({
+        strategyId: this.id,
+        direction: "long",
+        entryZoneLow: lower[i],
+        entryZoneHigh: lower[i] + (lastC.c - lower[i]) * 0.6,
+        idealEntry: lastC.c,
+        stopLoss: lastC.l - (middle[i] - lower[i]) * 0.15,
+        targetHint: { type: "level", price: middle[i] },
+        rationale: `Touched the lower Bollinger Band ($${lower[i].toFixed(2)}) and rejected back inside it in a Range regime.`,
+        invalidation: `Close below $${lower[i].toFixed(2)} — the range would be breaking down, not holding.`,
+        minRR: this.minRR,
+      });
+    }
+    if (lastC.h >= upper[i] && lastC.c < upper[i]) {
+      return makeCandidate({
+        strategyId: this.id,
+        direction: "short",
+        entryZoneLow: upper[i] - (upper[i] - lastC.c) * 0.6,
+        entryZoneHigh: upper[i],
+        idealEntry: lastC.c,
+        stopLoss: lastC.h + (upper[i] - middle[i]) * 0.15,
+        targetHint: { type: "level", price: middle[i] },
+        rationale: `Touched the upper Bollinger Band ($${upper[i].toFixed(2)}) and rejected back inside it in a Range regime.`,
+        invalidation: `Close above $${upper[i].toFixed(2)} — the range would be breaking out, not holding.`,
+        minRR: this.minRR,
+      });
+    }
+    return null;
+  },
+};
+
+export const gapAndGo = {
+  id: "gap_and_go",
+  name: "Gap and Go",
+  description: "Trades continuation of an overnight gap (today's open vs. the prior session's close) on strong relative volume — a very widely used retail opening-session strategy that wasn't covered.",
+  market: "us_stocks",
+  applicableRegime: ["Breakout", "Strong Uptrend", "Strong Downtrend", "Weak Uptrend", "Weak Downtrend"],
+  timeframe: "15m",
+  minRR: 2,
+  entryConditions: "Today's session opened at least 1% away from the prior session's close, and price is continuing in the gap's direction.",
+  confirmationConditions: "RVOL >= 1.5x; price is holding on the gap side of today's open, not filling back through it.",
+  stopLogic: "Back through today's opening price — the level that defines whether the gap is holding.",
+  targetLogic: "ATR-multiple continuation (a fresh gap has no prior intraday structure yet to target).",
+  invalidations: "Price fills back through today's open into the gap — the move is failing.",
+  evaluate(ctx) {
+    if (ctx.market !== "us_stocks") return null;
+    const candles = ctx.candles;
+    const nyDateKeys = candles.map((c) => localParts(new Date(c.t), "America/New_York").dateKey);
+    const lastKey = nyDateKeys[nyDateKeys.length - 1];
+    let todayStartIdx = candles.length - 1;
+    while (todayStartIdx > 0 && nyDateKeys[todayStartIdx - 1] === lastKey) todayStartIdx--;
+    if (todayStartIdx === 0) return null; // no prior session in the fetched window to compare against
+
+    const prevClose = candles[todayStartIdx - 1].c;
+    const todayOpen = candles[todayStartIdx].o;
+    const gapPct = ((todayOpen - prevClose) / prevClose) * 100;
+    if (Math.abs(gapPct) < 1) return null; // not a meaningful gap
+
+    const i = candles.length - 1;
+    const lastC = candles[i];
+    const rvol = ctx.indicators.rvol20[i];
+    if (rvol === null || rvol < 1.5) return null;
+    const atrNow = ctx.indicators.atr14[i] ?? lastC.c * 0.01;
+
+    if (gapPct > 0 && lastC.c > todayOpen) {
+      return makeCandidate({
+        strategyId: this.id,
+        direction: "long",
+        entryZoneLow: todayOpen,
+        entryZoneHigh: lastC.c,
+        idealEntry: Math.max(todayOpen, lastC.c - atrNow * 0.3),
+        stopLoss: todayOpen - atrNow * 0.5,
+        targetHint: { type: "atr_multiple", atrMultiple: 2.5 },
+        rationale: `Gapped up ${gapPct.toFixed(1)}% from the prior close and is holding above the open with RVOL ${rvol.toFixed(2)}x.`,
+        invalidation: `Price fills back below today's open ($${todayOpen.toFixed(2)}).`,
+        minRR: this.minRR,
+      });
+    }
+    if (gapPct < 0 && lastC.c < todayOpen) {
+      return makeCandidate({
+        strategyId: this.id,
+        direction: "short",
+        entryZoneLow: lastC.c,
+        entryZoneHigh: todayOpen,
+        idealEntry: Math.min(todayOpen, lastC.c + atrNow * 0.3),
+        stopLoss: todayOpen + atrNow * 0.5,
+        targetHint: { type: "atr_multiple", atrMultiple: 2.5 },
+        rationale: `Gapped down ${gapPct.toFixed(1)}% from the prior close and is holding below the open with RVOL ${rvol.toFixed(2)}x.`,
+        invalidation: `Price fills back above today's open ($${todayOpen.toFixed(2)}).`,
+        minRR: this.minRR,
+      });
+    }
+    return null;
+  },
+};
+
+export const US_STOCK_STRATEGIES = [openingRangeBreakout, breakoutVolume, breakoutRetest, trendPullback, vwapReclaim, relativeStrengthBreakout, bollingerMeanReversion, gapAndGo];

@@ -24,6 +24,11 @@ const STORE_DEFS = [
 
 let dbPromise = null;
 
+/** Test-only hook: forces the next openDB() call to re-open — e.g. against a freshly installed fake IndexedDB between test cases. Not used by the app itself. */
+export function _resetForTests() {
+  dbPromise = null;
+}
+
 export function openDB() {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {

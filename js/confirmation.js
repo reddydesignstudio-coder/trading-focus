@@ -67,6 +67,12 @@ function checkCandlestick(ctx, direction) {
 
 function checkRegime(ctx, direction) {
   const r = ctx.regimeResult.regime;
+  // A genuine Range regime supports a mean-reversion/fade trade in EITHER
+  // direction — this credits it for range-fade strategies (Bollinger Mean
+  // Reversion, Liquidity Sweep, S/R Rejection), which previously never
+  // received regime confirmation credit at all since only trend/breakout
+  // regimes were checked.
+  if (r === "Range") return true;
   if (direction === "long") return r === "Breakout" || r === "Strong Uptrend" || r === "Weak Uptrend";
   return r === "Breakout" || r === "Strong Downtrend" || r === "Weak Downtrend";
 }

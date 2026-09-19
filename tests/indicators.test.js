@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ema, sma, rsi, macd, atr, adx, sessionVWAP, rvol } from "../js/indicators.js";
+import { ema, sma, rsi, macd, atr, adx, sessionVWAP, rvol, estimatePaceMs } from "../js/indicators.js";
 
 function makeCandles(closes, high = null, low = null, vols = null) {
   return closes.map((c, i) => ({
@@ -92,4 +92,23 @@ test("rvol flags volume spikes correctly", () => {
   const closes = Array(25).fill(50);
   const out = rvol(vols, 20);
   assert.ok(out[24] > 2.5);
+});
+
+test("estimatePaceMs converts distance/ATR into a bars-based time estimate", () => {
+  // distance 10, ATR 2/bar -> 5 bars; 15m bars -> 5 * 900000ms = 4,500,000ms (1h 15m)
+  const result = estimatePaceMs(10, 2, 900000);
+  assert.equal(result, 4500000);
+});
+
+test("estimatePaceMs returns null when ATR is zero, missing, or distance is unavailable", () => {
+  assert.equal(estimatePaceMs(10, 0, 900000), null);
+  assert.equal(estimatePaceMs(10, null, 900000), null);
+  assert.equal(estimatePaceMs(null, 2, 900000), null);
+  assert.equal(estimatePaceMs(10, 2, null), null);
+});
+
+test("estimatePaceMs scales linearly with distance", () => {
+  const near = estimatePaceMs(5, 1, 3600000);
+  const far = estimatePaceMs(20, 1, 3600000);
+  assert.equal(far, near * 4);
 });

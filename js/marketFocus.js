@@ -135,3 +135,60 @@ function formatMinutes(mins) {
   const m = mins % 60;
   return `${h}h ${m}m`;
 }
+
+/**
+ * Assesses how favorable the CURRENT moment is to trade a given market,
+ * based on well-documented, time-of-day liquidity/volatility patterns
+ * (opening-hour volume, the midday lull, the closing-hour pickup, the
+ * London/New York overlap, etc). This is a liquidity/volatility-character
+ * read for the present instant — never a prediction of where price will go.
+ * Returns { verdict: "Good"|"Fair"|"Weak"|"Closed", reason }.
+ */
+export function assessTradingWindow(market, now = new Date()) {
+  if (market === "us_stocks") {
+    const p = localParts(now, "America/New_York");
+    if (![1, 2, 3, 4, 5].includes(p.weekday)) {
+      return { verdict: "Closed", reason: "It's the weekend — US markets are closed." };
+    }
+    const m = p.minutesOfDay;
+    if (m < 4 * 60) return { verdict: "Closed", reason: "Outside pre-market and regular trading hours." };
+    if (m < 9 * 60 + 30)
+      return { verdict: "Fair", reason: "Pre-market — thin liquidity and wider spreads. Mainly relevant if there's a news catalyst." };
+    if (m < 10 * 60 + 30)
+      return { verdict: "Good", reason: "Opening hour — typically the highest volume and volatility of the US trading day." };
+    if (m < 11 * 60 + 30)
+      return { verdict: "Fair", reason: "Volume is usually still elevated here, but starting to fade from the open." };
+    if (m < 14 * 60)
+      return { verdict: "Weak", reason: "Midday lull — volume and volatility typically bottom out around here; more prone to choppy, directionless moves." };
+    if (m < 15 * 60)
+      return { verdict: "Fair", reason: "Early afternoon — volume is usually starting to pick back up ahead of the close." };
+    if (m < 16 * 60)
+      return { verdict: "Good", reason: "Final hour before the close — volume typically picks back up as positions get squared for the day." };
+    if (m < 20 * 60) return { verdict: "Fair", reason: "After-hours — thin liquidity, wider spreads. Mainly relevant for news reactions." };
+    return { verdict: "Closed", reason: "Outside all US trading hours." };
+  }
+
+  if (market === "forex") {
+    const status = getSessionStatus(now);
+    const nyActive = status.active.some((s) => s.id === "newyork_fx");
+    const londonActive = status.active.some((s) => s.id === "london");
+    const tokyoActive = status.active.some((s) => s.id === "tokyo");
+    if (status.overlaps.londonNewYork)
+      return { verdict: "Good", reason: "London/New York overlap — historically the highest-liquidity, highest-volatility window for major pairs." };
+    if (londonActive) return { verdict: "Fair", reason: "London is open, but New York hasn't joined yet — solid liquidity, not yet at its daily peak." };
+    if (nyActive) return { verdict: "Fair", reason: "New York session with London already closed — liquidity is typically lower than during the overlap." };
+    if (tokyoActive) return { verdict: "Weak", reason: "Tokyo session only — thinner liquidity outside JPY crosses." };
+    return { verdict: "Weak", reason: "Outside the major FX sessions — liquidity is typically thin right now." };
+  }
+
+  if (market === "crypto") {
+    const status = getSessionStatus(now);
+    if (status.overlaps.londonNewYork)
+      return { verdict: "Good", reason: "US/EU trading hours overlap — crypto activity is typically elevated during this window too." };
+    if (status.active.some((s) => ["london", "newyork_fx", "us_regular"].includes(s.id)))
+      return { verdict: "Fair", reason: "A major equity/FX session is active — crypto activity tends to be a bit above its quietest hours." };
+    return { verdict: "Weak", reason: "Outside US/EU trading hours — crypto liquidity is typically thinner and more prone to erratic moves overnight." };
+  }
+
+  return { verdict: "Fair", reason: "" };
+}

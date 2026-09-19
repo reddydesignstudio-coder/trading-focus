@@ -267,4 +267,64 @@ export const liquiditySweepCrypto = {
   },
 };
 
-export const CRYPTO_STRATEGIES = [breakoutRetestCrypto, trendPullbackCrypto, compressionExpansion, vwapReclaimCrypto, liquiditySweepCrypto];
+export const emaMomentumCross = {
+  id: "ema_momentum_cross_crypto",
+  name: "EMA 9/20 Momentum Cross",
+  description: "Trades a fresh crossover of the fast EMA9 above/below EMA20, confirmed by trend strength (ADX) — a widely used fast-momentum setup that wasn't covered, well suited to crypto's pace.",
+  market: "crypto",
+  applicableRegime: ["Strong Uptrend", "Weak Uptrend", "Strong Downtrend", "Weak Downtrend", "Breakout"],
+  timeframe: "1h",
+  minRR: 2,
+  entryConditions: "EMA9 crosses above/below EMA20 on the most recent candle (it was on the other side the candle before).",
+  confirmationConditions: "ADX >= 20 (real trend strength, not just chop).",
+  stopLogic: "Most recent swing low/high around the cross.",
+  targetLogic: "ATR-multiple continuation.",
+  invalidations: "EMA9 crosses back through EMA20 against the trade direction.",
+  evaluate(ctx) {
+    const i = ctx.candles.length - 1;
+    const ema9 = ctx.indicators.ema9;
+    const ema20 = ctx.indicators.ema20;
+    if (i < 1 || ema9[i] === null || ema9[i - 1] === null || ema20[i] === null || ema20[i - 1] === null) return null;
+    const adxVal = ctx.indicators.adx14.adx[i];
+    if (adxVal === null || adxVal < 20) return null;
+    const lastC = ctx.candles[i];
+    const atrNow = ctx.indicators.atr14[i] ?? lastC.c * 0.01;
+
+    const crossedUp = ema9[i - 1] <= ema20[i - 1] && ema9[i] > ema20[i];
+    const crossedDown = ema9[i - 1] >= ema20[i - 1] && ema9[i] < ema20[i];
+
+    if (crossedUp) {
+      const swingLow = lastSwingLow(ctx.structure.swings);
+      return makeCandidate({
+        strategyId: this.id,
+        direction: "long",
+        entryZoneLow: lastC.c - atrNow * 0.15,
+        entryZoneHigh: lastC.c + atrNow * 0.1,
+        idealEntry: lastC.c,
+        stopLoss: swingLow ? swingLow.price : lastC.c - atrNow * 1.5,
+        targetHint: { type: "atr_multiple", atrMultiple: 2.5 },
+        rationale: `Fast EMA9 crossed above EMA20 with ADX ${adxVal.toFixed(1)} confirming trend strength.`,
+        invalidation: `EMA9 crosses back below EMA20.`,
+        minRR: this.minRR,
+      });
+    }
+    if (crossedDown) {
+      const swingHigh = lastSwingHigh(ctx.structure.swings);
+      return makeCandidate({
+        strategyId: this.id,
+        direction: "short",
+        entryZoneLow: lastC.c - atrNow * 0.1,
+        entryZoneHigh: lastC.c + atrNow * 0.15,
+        idealEntry: lastC.c,
+        stopLoss: swingHigh ? swingHigh.price : lastC.c + atrNow * 1.5,
+        targetHint: { type: "atr_multiple", atrMultiple: 2.5 },
+        rationale: `Fast EMA9 crossed below EMA20 with ADX ${adxVal.toFixed(1)} confirming trend strength.`,
+        invalidation: `EMA9 crosses back above EMA20.`,
+        minRR: this.minRR,
+      });
+    }
+    return null;
+  },
+};
+
+export const CRYPTO_STRATEGIES = [breakoutRetestCrypto, trendPullbackCrypto, compressionExpansion, vwapReclaimCrypto, liquiditySweepCrypto, emaMomentumCross];

@@ -11,7 +11,10 @@ export function defaultSettings() {
     risk: { ...DEFAULT_RISK_SETTINGS },
     timeZone: DEFAULT_TIMEZONE,
     useDeviceTimeZone: true,
-    apiKeys: { twelvedata: "" },
+    // twelvedata: primary key. twelvedataBackup: optional second key — if the
+    // primary comes back rate-limited (429), the data layer automatically
+    // retries with the backup before falling back to demo data.
+    apiKeys: { twelvedata: "", twelvedataBackup: "" },
     dataProviderOverride: {}, // e.g. { us_stocks: "demo" } to force demo mode per market
     testModeTradesPerDay: 2,
     watchlists: null, // null = use DEFAULT_WATCHLISTS
@@ -21,7 +24,19 @@ export function defaultSettings() {
 
 export async function loadSettings() {
   const existing = await get("settings", SETTINGS_KEY);
-  return existing ? { ...defaultSettings(), ...existing } : defaultSettings();
+  if (!existing) return defaultSettings();
+  const defaults = defaultSettings();
+  // Nested merge (not a shallow spread) for object-valued fields, so a
+  // setting saved before a new sub-field existed (e.g. an old apiKeys
+  // object without twelvedataBackup) still picks up the new default
+  // instead of silently losing it to the shallow-overwrite.
+  return {
+    ...defaults,
+    ...existing,
+    risk: { ...defaults.risk, ...(existing.risk || {}) },
+    apiKeys: { ...defaults.apiKeys, ...(existing.apiKeys || {}) },
+    dataProviderOverride: { ...defaults.dataProviderOverride, ...(existing.dataProviderOverride || {}) },
+  };
 }
 
 export async function saveSettings(settings) {
@@ -31,4 +46,9 @@ export async function saveSettings(settings) {
 
 export function effectiveTimeZone(settings) {
   return settings.useDeviceTimeZone ? deviceTimeZone() : settings.timeZone;
+}
+
+/** Ordered list of usable Twelve Data keys (primary first, then backup), skipping blanks. */
+export function twelveDataKeyList(settings) {
+  return [settings.apiKeys.twelvedata, settings.apiKeys.twelvedataBackup].filter((k) => k && k.trim());
 }

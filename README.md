@@ -11,7 +11,7 @@ system, and not a guarantee of profit. See [`docs/LIMITATIONS.md`](docs/LIMITATI
 2. Recommends which market (US Stocks / Forex / Crypto) is most worth checking right
    now, based on documented session-liquidity patterns — **a suitability estimate,
    never a profit prediction**.
-3. On demand (`CHECK FOR TRADE`), pulls real market data, runs 16 independent
+3. On demand (`CHECK FOR TRADE`), pulls real market data, runs 19 independent
    strategy modules through a shared indicator/structure/regime/confirmation/
    confidence/risk pipeline, and shows you only the setups that genuinely qualify —
    **0 to N, never padded to a target count**.
@@ -66,7 +66,7 @@ trading-app/
 │   ├── structure.js           # Swings, HH/HL/LH/LL, S/R, break of structure
 │   ├── candlestick.js         # Candlestick pattern detectors (confirmation-only)
 │   ├── regime.js               # Market regime classification
-│   ├── strategies/             # 16 independent strategy modules (6 US / 5 FX / 5 crypto)
+│   ├── strategies/             # 19 independent strategy modules (8 US / 5 FX / 6 crypto)
 │   ├── confirmation.js         # Independent-confirmation counting (min 2)
 │   ├── confidence.js           # 100-point setup-quality scoring
 │   ├── targetEngine.js         # Structure/ATR-aware target resolution
@@ -93,10 +93,11 @@ trading-app/
 
 ## Documentation index
 
+- [`FEATURES.md`](docs/FEATURES.md) — complete feature inventory (start here for "what's actually built")
 - [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system design, data flow, module map
 - [`DATA_PROVIDERS.md`](docs/DATA_PROVIDERS.md) — providers used, how to get a free key
 - [`LIMITATIONS.md`](docs/LIMITATIONS.md) — honest, itemized free-data/browser limitations
-- [`STRATEGIES.md`](docs/STRATEGIES.md) — all 16 strategies, rules, confirmations
+- [`STRATEGIES.md`](docs/STRATEGIES.md) — all 19 strategies, rules, confirmations
 - [`RISK.md`](docs/RISK.md) — risk/position-sizing/confidence documentation
 - [`STORAGE.md`](docs/STORAGE.md) — IndexedDB schema, versioning, export/import
 - [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) — free static hosting instructions

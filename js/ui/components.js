@@ -19,13 +19,13 @@ export function el(tag, attrs = {}, children = []) {
 
 export function dataStatusBadge(status) {
   const map = {
-    LIVE: { cls: "badge-live", label: "LIVE" },
-    DELAYED: { cls: "badge-delayed", label: "DELAYED" },
-    STALE: { cls: "badge-stale", label: "STALE" },
-    UNAVAILABLE: { cls: "badge-unavailable", label: "DATA UNAVAILABLE" },
-    DEMO: { cls: "badge-demo", label: "DEMO MODE" },
+    LIVE: { cls: "badge-live", label: "Live" },
+    DELAYED: { cls: "badge-delayed", label: "Delayed" },
+    STALE: { cls: "badge-stale", label: "Stale" },
+    UNAVAILABLE: { cls: "badge-unavailable", label: "Data Unavailable" },
+    DEMO: { cls: "badge-demo", label: "Demo Mode" },
   };
-  const m = map[status] || { cls: "badge-unavailable", label: status || "UNKNOWN" };
+  const m = map[status] || { cls: "badge-unavailable", label: status || "Unknown" };
   return el("span", { class: `badge ${m.cls}` }, m.label);
 }
 
@@ -43,7 +43,7 @@ export function signalCard(signal, { onPaperTrade, onMissed, blockedReason } = {
 
   card.appendChild(
     el("div", { class: "signal-card-header" }, [
-      el("div", { class: "signal-symbol" }, [el("span", { class: "ticker" }, signal.symbol), el("span", { class: `dir-pill ${dirClass}` }, signal.direction === "long" ? "LONG" : "SHORT")]),
+      el("div", { class: "signal-symbol" }, [el("span", { class: "ticker" }, signal.symbol), el("span", { class: `dir-pill ${dirClass}` }, signal.direction === "long" ? "Long" : "Short")]),
       dataStatusBadge(signal.isDemo ? "DEMO" : signal.dataStatus),
     ])
   );
@@ -84,7 +84,10 @@ export function signalCard(signal, { onPaperTrade, onMissed, blockedReason } = {
   );
 
   card.appendChild(el("div", { class: "signal-section-label" }, "Why this qualified"));
-  card.appendChild(el("p", { class: "rationale-text" }, signal.rationale));
+  card.appendChild(el("p", { class: "plain-english-text" }, signal.plainEnglish));
+  if (signal.rationale) {
+    card.appendChild(el("p", { class: "rationale-text" }, `Technical detail: ${signal.rationale}`));
+  }
 
   const confList = el(
     "div",
@@ -99,12 +102,12 @@ export function signalCard(signal, { onPaperTrade, onMissed, blockedReason } = {
 
   const actions = el("div", { class: "signal-actions" });
   if (blockedReason) {
-    actions.appendChild(el("button", { class: "btn btn-disabled", disabled: "disabled" }, "PAPER TRADE"));
+    actions.appendChild(el("button", { class: "btn btn-disabled", disabled: "disabled" }, "Paper Trade"));
     card.appendChild(actions);
     card.appendChild(el("p", { class: "blocked-reason" }, blockedReason));
     return card;
   }
-  if (onPaperTrade) actions.appendChild(el("button", { class: "btn btn-primary", onclick: () => onPaperTrade(signal) }, "PAPER TRADE"));
+  if (onPaperTrade) actions.appendChild(el("button", { class: "btn btn-primary", onclick: () => onPaperTrade(signal) }, "Paper Trade"));
   if (onMissed) actions.appendChild(el("button", { class: "btn btn-ghost", onclick: () => onMissed(signal) }, "Mark Missed"));
   card.appendChild(actions);
 
@@ -141,11 +144,12 @@ export function funnelBar(funnel) {
 
 export function tradeRow(trade, live = null) {
   const statusClass = { WIN: "status-win", LOSS: "status-loss", OPEN: "status-open", AMBIGUOUS: "status-ambiguous" }[trade.status] || "";
+  const statusLabel = { WIN: "Win", LOSS: "Loss", OPEN: "Open", AMBIGUOUS: "Ambiguous" }[trade.status] || trade.status;
   const rows = [
     el("div", { class: "trade-row-top" }, [
       el("span", { class: "ticker" }, trade.symbol),
-      el("span", { class: `dir-pill dir-${trade.direction}` }, trade.direction === "long" ? "LONG" : "SHORT"),
-      el("span", { class: `status-pill ${statusClass}` }, trade.status),
+      el("span", { class: `dir-pill dir-${trade.direction}` }, trade.direction === "long" ? "Long" : "Short"),
+      el("span", { class: `status-pill ${statusClass}` }, statusLabel),
     ]),
     el("div", { class: "trade-row-strategy" }, trade.strategyName),
   ];
@@ -157,8 +161,15 @@ export function tradeRow(trade, live = null) {
         kv("Unrealized P&L", live && live.unrealizedPnl !== null ? fmtUSD(live.unrealizedPnl) : "—"),
         kv("If TP hits", `+${fmtUSD(trade.potentialReward)}`),
         kv("If SL hits", `-${fmtUSD(trade.dollarRisk)}`),
+        kv("Distance to TP", live && live.distanceToTP !== null ? fmtPrice(live.distanceToTP) : "—"),
+        kv("Distance to SL", live && live.distanceToSL !== null ? fmtPrice(live.distanceToSL) : "—"),
       ])
     );
+    if (live && live.paceMs !== null && live.paceMs !== undefined) {
+      rows.push(
+        el("p", { class: "pace-note" }, `Typical pace to TP at current volatility: ~${formatHoldingTime(live.paceMs)}. This is a rough historical-volatility estimate, not a prediction — price can move faster, slower, stall, or reverse at any time.`)
+      );
+    }
   }
 
   rows.push(

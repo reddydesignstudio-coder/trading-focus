@@ -1,24 +1,26 @@
 // js/ui/views.js
 import { el, signalCard, statCard, funnelBar, tradeRow, dataStatusBadge } from "./components.js";
-import { computeMarketFocus } from "../marketFocus.js";
+import { computeMarketFocus, assessTradingWindow } from "../marketFocus.js";
 import { formatClock, formatCountdownHMS, computeKeySessionCountdowns } from "../timezone.js";
 import { scanMarket, DEFAULT_WATCHLISTS } from "../scanner.js";
-import { getLiveModeStatus, executeTrade, markSignalMissed, saveSignal, TEST_MODE_OPTIONS } from "../paperTrading.js";
+import { getLiveModeStatus, executeTrade, markSignalMissed, saveSignal, TEST_MODE_OPTIONS, checkAndResolveOpenTrades } from "../paperTrading.js";
 import { recalculateTrade } from "../risk.js";
 import { getDailySummary } from "../dailySummary.js";
-import { getAll } from "../db.js";
+import { getAll, put, remove } from "../db.js";
 import { computePerformance } from "../performance.js";
 import { getStrategyLab } from "../strategyLab.js";
 import { runBacktest } from "../backtest.js";
 import { getMarketData } from "../dataProviders/index.js";
+import { atr, estimatePaceMs } from "../indicators.js";
 import { strategiesForMarket, ALL_STRATEGIES } from "../strategies/index.js";
 import { exportJSON, exportTradesCSV, importFromJSON, downloadBlob } from "../exportImport.js";
 import { saveSettings } from "../settings.js";
-import { fmtUSD, fmtPct, todayKey } from "../utils.js";
+import { fmtUSD, fmtPct, todayKey, uid } from "../utils.js";
 
 // -------------------------------------------------------------- HOME
 export async function renderHome(root, state) {
   root.innerHTML = "";
+  await checkAndResolveOpenTrades(state); // resolve any trade that has actually hit TP/SL since we last checked
   const tz = state.effectiveTimeZone();
   const liveStatus = await getLiveModeStatus(tz);
   const summary = await getDailySummary({ timeZone: tz, startingBalance: state.settings.risk.accountBalance, mode: "live" });
@@ -62,25 +64,17 @@ export async function renderHome(root, state) {
   const focus = computeMarketFocus(new Date(), tz);
   root.appendChild(
     el("div", { class: `card focus-card focus-${focus.focus.market}` }, [
-      el("div", { class: "focus-market" }, `FOCUS NOW: ${labelForMarket(focus.focus.market)}`),
+      el("div", { class: "focus-market" }, `Focus Now: ${labelForMarket(focus.focus.market)}`),
       el("p", { class: "focus-reason" }, focus.focus.reason),
     ])
   );
-
-  // ---- Market buttons — colorful, one per asset class ----
-  const buttonsRow = el("div", { class: "market-buttons" }, [
-    el("button", { class: "btn btn-market market-stocks", onclick: () => state.goToScan("us_stocks") }, ["📊 ", "CHECK US STOCKS"]),
-    el("button", { class: "btn btn-market market-forex", onclick: () => state.goToScan("forex") }, ["💱 ", "CHECK FOREX"]),
-    el("button", { class: "btn btn-market market-crypto", onclick: () => state.goToScan("crypto") }, ["₿ ", "CHECK CRYPTO"]),
-  ]);
-  root.appendChild(buttonsRow);
 
   // ---- Stats ----
   const statsGrid = el("div", { class: "stats-grid" }, [
     statCard("Account Balance", fmtUSD(state.settings.risk.accountBalance)),
     statCard("Today's P&L", fmtUSD(summary.metrics.netPnL)),
     statCard("Today's Win %", summary.metrics.winPct === null ? "N/A" : fmtPct(summary.metrics.winPct)),
-    statCard("Live Mode", liveStatus.available ? "AVAILABLE" : "COMPLETED", liveStatus.available ? "1 trade available today" : liveStatus.reason.replace(/_/g, " ")),
+    statCard("Live Mode", liveStatus.available ? "Available" : "Completed", liveStatus.available ? "1 trade available today" : liveStatus.reason.replace(/_/g, " ")),
   ]);
   root.appendChild(statsGrid);
 
@@ -90,7 +84,7 @@ export async function renderHome(root, state) {
 }
 
 function dataSourcesCard(state) {
-  const hasKey = !!state.settings.apiKeys.twelvedata;
+  const hasKey = !!(state.settings.apiKeys.twelvedata || state.settings.apiKeys.twelvedataBackup);
   const rows = [
     { label: "Crypto", real: true, note: "Binance public API — always real, no setup needed" },
     { label: "US Stocks", real: hasKey && state.settings.dataProviderOverride?.us_stocks !== "demo", note: hasKey ? "Twelve Data (delayed, real)" : "No API key set — showing simulated demo data" },
@@ -102,7 +96,7 @@ function dataSourcesCard(state) {
       el("div", { class: "data-source-row" }, [
         el("span", { class: `data-source-dot ${r.real ? "is-real" : "is-demo"}` }),
         el("span", { class: "data-source-label" }, r.label),
-        el("span", { class: `data-source-tag ${r.real ? "is-real" : "is-demo"}` }, r.real ? "REAL" : "DEMO"),
+        el("span", { class: `data-source-tag ${r.real ? "is-real" : "is-demo"}` }, r.real ? "Real" : "Demo"),
         el("span", { class: "data-source-note" }, r.note),
       ])
     );
@@ -122,16 +116,16 @@ function scanLegend() {
   const details = document.createElement("details");
   details.className = "scan-legend";
   const summary = document.createElement("summary");
-  summary.textContent = "What do LIVE / DELAYED / QUALIFYING / REJECTED mean?";
+  summary.textContent = "What do Live, Delayed, Qualifying, and Rejected mean?";
   details.appendChild(summary);
   const items = [
-    ["LIVE", "Real, current-as-of-seconds data (currently: Crypto via Binance only)."],
-    ["DELAYED", "Real data, but not guaranteed up-to-the-second (currently: Stocks/Forex via Twelve Data)."],
-    ["STALE", "Data came back too old to trust — new signals are blocked until it refreshes."],
-    ["DEMO MODE", "No real data source configured — simulated, deterministic fake data so you can try the app."],
-    ["QUALIFYING", "This symbol had a setup that passed every filter — it's shown above as a signal card."],
-    ["REJECTED", "A strategy's entry condition triggered, but it failed a quality/risk check (weak confirmation, poor R:R, etc). This is the app working correctly, not an error — most scans reject far more than they qualify."],
-    ["NO SETUP DETECTED", "None of the strategies for this market saw a matching pattern on the latest candle right now — nothing to reject, there was just nothing there."],
+    ["Live", "Real, current-as-of-seconds data (currently: Crypto via Binance only)."],
+    ["Delayed", "Real data, but not guaranteed up-to-the-second (currently: Stocks/Forex via Twelve Data)."],
+    ["Stale", "Data came back too old to trust — new signals are blocked until it refreshes."],
+    ["Demo Mode", "No real data source configured — simulated, deterministic fake data so you can try the app."],
+    ["Qualifying", "This symbol had a setup that passed every filter — it's shown above as a signal card."],
+    ["Rejected", "A strategy's entry condition triggered, but it failed a quality/risk check (weak confirmation, poor R:R, etc). This is the app working correctly, not an error — most scans reject far more than they qualify."],
+    ["No Setup Detected", "None of the strategies for this market saw a matching pattern on the latest candle right now — nothing to reject, there was just nothing there."],
   ];
   const list = document.createElement("div");
   list.className = "scan-legend-list";
@@ -150,11 +144,14 @@ function scanLegend() {
   return details;
 }
 
-const BEST_TIME_TIPS = {
-  us_stocks: "Best window: the first hour after open and the last hour before close tend to see the most volume and volatility. Midday is typically quieter and choppier.",
-  forex: "Best window: the London/New York overlap is typically the highest-liquidity stretch for major pairs — that's the New York countdown tracked above.",
-  crypto: "Crypto trades 24/7. Liquidity and volatility are typically highest during the US/EU trading-hours overlap, and quieter during the late-night/early-morning Asia-Pacific hours.",
-};
+function windowVerdictRow(market) {
+  const w = assessTradingWindow(market, new Date());
+  const cls = { Good: "is-good", Fair: "is-fair", Weak: "is-weak", Closed: "is-closed" }[w.verdict] || "is-fair";
+  return el("div", { class: "window-verdict" }, [
+    el("span", { class: `window-verdict-pill ${cls}` }, `${w.verdict} Window`),
+    el("p", { class: "window-verdict-reason" }, w.reason),
+  ]);
+}
 
 function renderMarketStatusCard(container, market, state) {
   container.innerHTML = "";
@@ -168,8 +165,8 @@ function renderMarketStatusCard(container, market, state) {
   }
 
   if (market === "crypto") {
-    card.appendChild(el("div", { class: "market-status-row" }, [el("span", { class: "market-status-badge is-active" }, "OPEN 24/7")]));
-    card.appendChild(el("p", { class: "market-status-tip" }, BEST_TIME_TIPS.crypto));
+    card.appendChild(el("div", { class: "market-status-row" }, [el("span", { class: "market-status-badge is-active" }, "Open 24/7")]));
+    card.appendChild(windowVerdictRow(market));
     return;
   }
 
@@ -189,11 +186,11 @@ function renderMarketStatusCard(container, market, state) {
     card.innerHTML = "";
     card.appendChild(
       el("div", { class: "market-status-row" }, [
-        el("span", { class: `market-status-badge ${cached.active ? "is-active" : "is-inactive"}` }, cached.active ? "OPEN NOW" : "CLOSED"),
+        el("span", { class: `market-status-badge ${cached.active ? "is-active" : "is-inactive"}` }, cached.active ? "Open Now" : "Closed"),
         el("span", { class: "market-status-countdown" }, ms !== null ? `${cached.active ? "closes" : "opens"} in ${formatCountdownHMS(Math.max(0, ms))}` : "—"),
       ])
     );
-    card.appendChild(el("p", { class: "market-status-tip" }, BEST_TIME_TIPS[market]));
+    card.appendChild(windowVerdictRow(market));
   };
   tick();
   const id = setInterval(tick, 1000);
@@ -232,12 +229,12 @@ export async function renderScan(root, state) {
 
   root.appendChild(scanLegend());
 
-  const isDemoForThisMarket = state.settings.dataProviderOverride?.[market] === "demo" || (market !== "crypto" && !state.settings.apiKeys.twelvedata);
+  const isDemoForThisMarket = state.settings.dataProviderOverride?.[market] === "demo" || (market !== "crypto" && !state.settings.apiKeys.twelvedata && !state.settings.apiKeys.twelvedataBackup);
 
   if (isDemoForThisMarket) {
     root.appendChild(
       el("div", { class: "notice notice-demo" }, [
-        el("strong", {}, "DEMO MODE: "),
+        el("strong", {}, "Demo Mode: "),
         market === "crypto"
           ? "Demo override enabled in Settings."
           : "No Twelve Data API key configured — add a free key in Settings to scan real US Stocks/Forex data. Showing deterministic demo data so you can exercise the full workflow.",
@@ -253,7 +250,7 @@ export async function renderScan(root, state) {
     }
   }
 
-  const scanBtn = el("button", { class: "btn btn-primary btn-large", onclick: () => runScan() }, "CHECK FOR TRADE");
+  const scanBtn = el("button", { class: "btn btn-primary btn-large", onclick: () => runScan() }, "Check for Trade");
   root.appendChild(scanBtn);
 
   const resultsWrap = el("div", { class: "scan-results" });
@@ -283,7 +280,7 @@ export async function renderScan(root, state) {
       if (result.qualifying.length === 0) {
         resultsWrap.appendChild(
           el("div", { class: "no-trade-card" }, [
-            el("div", { class: "no-trade-title" }, "NO QUALIFYING TRADE"),
+            el("div", { class: "no-trade-title" }, "No Qualifying Trade"),
             el("p", {}, `Scanned ${result.symbolsScanned} symbols. No setup met the minimum confirmation, risk/reward, or no-trade filter requirements right now — see the breakdown below for exactly why each symbol was passed over.`),
           ])
         );
@@ -311,7 +308,7 @@ export async function renderScan(root, state) {
       resultsWrap.appendChild(el("div", { class: "notice notice-error" }, friendlyErrorMessage(e)));
     } finally {
       scanBtn.disabled = false;
-      scanBtn.textContent = "CHECK FOR TRADE";
+      scanBtn.textContent = "Check for Trade";
     }
   }
 }
@@ -322,7 +319,7 @@ function symbolsScannedTable(perSymbolResults) {
   perSymbolResults.forEach((r) => {
     const hasQualifying = r.qualifying.length > 0;
     const hasRejected = (r.rejected || []).length > 0;
-    const statusLabel = r.error ? "DATA ISSUE" : hasQualifying ? "QUALIFYING" : hasRejected ? "REJECTED" : "NO SETUP DETECTED";
+    const statusLabel = r.error ? "Data Issue" : hasQualifying ? "Qualifying" : hasRejected ? "Rejected" : "No Setup Detected";
     const statusClass = r.error ? "audit-issue" : hasQualifying ? "audit-qualifying" : hasRejected ? "audit-rejected" : "audit-none";
 
     const row = el("div", { class: "symbol-audit-row" });
@@ -467,11 +464,14 @@ export async function renderOthers(root, state) {
 // -------------------------------------------------------------- JOURNAL
 export async function renderJournal(root, state) {
   root.innerHTML = "";
+  root.appendChild(el("p", { class: "loading-inline" }, "Checking open trades against current prices…"));
+  await checkAndResolveOpenTrades(state); // resolve anything that has actually hit TP/SL since we last checked
+  root.innerHTML = "";
   const trades = (await getAll("trades")).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
   root.appendChild(el("div", { class: "section-title" }, `Journal (${trades.length} trades)`));
   if (!trades.length) {
-    root.appendChild(el("p", { class: "empty-state" }, "No trades yet. Run CHECK FOR TRADE and paper trade a signal to start your journal."));
+    root.appendChild(el("p", { class: "empty-state" }, "No trades yet. Run Check for Trade and paper trade a signal to start your journal."));
     return;
   }
 
@@ -490,10 +490,18 @@ export async function renderJournal(root, state) {
     uniqueKeys.map(async (key) => {
       const [market, symbol] = key.split(":");
       let price = null;
+      let atrVal = null;
+      const timeframe = market === "us_stocks" ? "15m" : "1h";
+      const timeframeMs = { "15m": 900000, "1h": 3600000 }[timeframe];
       try {
-        const timeframe = market === "us_stocks" ? "15m" : "1h";
-        const data = await getMarketData({ symbol, market, timeframe, limit: 2, apiKeys: state.settings.apiKeys, forceProviderId: state.settings.dataProviderOverride?.[market] });
-        price = data.candles?.[data.candles.length - 1]?.c ?? null;
+        // limit:30 (not just the last candle) so we can also read recent volatility (ATR) for the pace estimate below.
+        const data = await getMarketData({ symbol, market, timeframe, limit: 30, apiKeys: state.settings.apiKeys, forceProviderId: state.settings.dataProviderOverride?.[market] });
+        const candles = data.candles;
+        price = candles?.[candles.length - 1]?.c ?? null;
+        if (candles && candles.length >= 15) {
+          const atrSeries = atr(candles, 14);
+          atrVal = atrSeries[atrSeries.length - 1];
+        }
       } catch {
         price = null;
       }
@@ -502,7 +510,17 @@ export async function renderJournal(root, state) {
         if (t.status !== "OPEN" || `${t.market}:${t.symbol}` !== key) return;
         const risk = Math.abs(t.entryPrice - t.stopLoss);
         const priceDelta = t.direction === "long" ? price - t.entryPrice : t.entryPrice - price;
-        const live = { currentPrice: price, unrealizedPnl: priceDelta * t.positionSize, unrealizedR: risk > 0 ? priceDelta / risk : null };
+        const distanceToTP = t.takeProfit !== null && t.takeProfit !== undefined ? Math.abs(t.takeProfit - price) : null;
+        const distanceToSL = Math.abs(t.stopLoss - price);
+        const paceMs = estimatePaceMs(distanceToTP, atrVal, timeframeMs);
+        const live = {
+          currentPrice: price,
+          unrealizedPnl: priceDelta * t.positionSize,
+          unrealizedR: risk > 0 ? priceDelta / risk : null,
+          distanceToTP,
+          distanceToSL,
+          paceMs,
+        };
         const freshRow = tradeRow(t, live);
         rows[idx].replaceWith(freshRow);
         rows[idx] = freshRow;
@@ -514,9 +532,10 @@ export async function renderJournal(root, state) {
 // -------------------------------------------------------------- DAILY SUMMARY
 export async function renderDailySummary(root, state) {
   root.innerHTML = "";
+  await checkAndResolveOpenTrades(state); // resolve any trade that has actually hit TP/SL since we last checked
   const summary = await getDailySummary({ timeZone: state.effectiveTimeZone(), startingBalance: state.settings.risk.accountBalance, mode: "all" });
 
-  root.appendChild(el("div", { class: "card headline-card" }, [el("div", { class: "headline-label" }, "TODAY"), el("div", { class: "headline-text" }, summary.headline)]));
+  root.appendChild(el("div", { class: "card headline-card" }, [el("div", { class: "headline-label" }, "Today"), el("div", { class: "headline-text" }, summary.headline)]));
   root.appendChild(
     el("div", { class: "balance-row" }, [
       el("span", {}, `Starting: ${fmtUSD(summary.startingBalance)}`),
@@ -680,8 +699,16 @@ export async function renderBacktest(root, state) {
   root.appendChild(runBtn);
   root.appendChild(resultsWrap);
 
+  const historyContainer = el("div", {});
+  root.appendChild(el("div", { class: "section-title" }, "Saved Backtests"));
+  root.appendChild(historyContainer);
+  await renderBacktestHistory(historyContainer, state);
+
+  let lastRun = null; // { market, symbol, strategyIds, isDemo, dataStatus, result } — set after a successful run
+
   async function runIt() {
     resultsWrap.innerHTML = "";
+    lastRun = null;
     runBtn.disabled = true;
     runBtn.textContent = "Running…";
     try {
@@ -706,6 +733,15 @@ export async function renderBacktest(root, state) {
       resultsWrap.appendChild(backtestStatsBlock(result.outOfSample.performance));
       resultsWrap.appendChild(el("div", { class: "section-title" }, "Caveats"));
       resultsWrap.appendChild(el("ul", { class: "caveat-list" }, result.caveats.map((c) => el("li", {}, c))));
+
+      lastRun = { market, symbol, strategyIds, isDemo: !!data.isDemo, dataStatus: data.status, result };
+      const saveBtn = el("button", { class: "btn", onclick: async () => {
+        await saveBacktestRun(lastRun);
+        await renderBacktestHistory(historyContainer, state);
+        saveBtn.textContent = "Saved ✓";
+        saveBtn.disabled = true;
+      } }, "💾 Save this backtest");
+      resultsWrap.appendChild(saveBtn);
     } catch (e) {
       resultsWrap.appendChild(el("div", { class: "notice notice-error" }, friendlyErrorMessage(e)));
     } finally {
@@ -713,6 +749,59 @@ export async function renderBacktest(root, state) {
       runBtn.textContent = "Run Backtest";
     }
   }
+}
+
+async function saveBacktestRun(run) {
+  const record = {
+    id: uid("backtest"),
+    createdAt: new Date().toISOString(),
+    market: run.market,
+    symbol: run.symbol,
+    strategyIds: run.strategyIds,
+    isDemo: run.isDemo,
+    dataStatus: run.dataStatus,
+    totalBars: run.result.totalBars,
+    inSampleCount: run.result.inSample.count,
+    outOfSampleCount: run.result.outOfSample.count,
+    inSamplePerformance: run.result.inSample.performance,
+    outOfSamplePerformance: run.result.outOfSample.performance,
+  };
+  await put("backtests", record);
+  return record;
+}
+
+async function renderBacktestHistory(container, state) {
+  container.innerHTML = "";
+  const runs = (await getAll("backtests")).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  if (!runs.length) {
+    container.appendChild(el("p", { class: "empty-state" }, "No saved backtests yet — run one above and tap \"Save this backtest\" to keep it here for comparison later."));
+    return;
+  }
+  runs.forEach((run) => {
+    const perf = run.outOfSamplePerformance?.tradesTaken ? run.outOfSamplePerformance : run.inSamplePerformance;
+    const card = el("div", { class: "card backtest-history-card" });
+    card.appendChild(
+      el("div", { class: "backtest-history-header" }, [
+        el("span", { class: "backtest-history-title" }, `${run.symbol} · ${labelForMarket(run.market)}`),
+        dataStatusBadge(run.isDemo ? "DEMO" : run.dataStatus),
+      ])
+    );
+    card.appendChild(el("p", { class: "backtest-history-meta" }, `${new Date(run.createdAt).toLocaleString()} · ${run.strategyIds.length} strategy(ies) · ${run.totalBars} bars`));
+    card.appendChild(
+      el("div", { class: "backtest-history-stats" }, [
+        el("span", {}, `Win %: ${perf.winPct === null ? "N/A" : perf.winPct + "%"}`),
+        el("span", {}, `Net P&L: ${fmtUSD(perf.netPnL)}`),
+        el("span", {}, `Trades: ${perf.tradesTaken}`),
+      ])
+    );
+    card.appendChild(
+      el("button", { class: "btn btn-ghost", onclick: async () => {
+        await remove("backtests", run.id);
+        await renderBacktestHistory(container, state);
+      } }, "Delete")
+    );
+    container.appendChild(card);
+  });
 }
 
 function backtestStatsBlock(perf) {
@@ -839,13 +928,15 @@ export async function renderSettings(root, state) {
 
   root.appendChild(el("div", { class: "section-title" }, "Data Providers"));
   root.appendChild(el("p", { class: "focus-reason" }, "Crypto uses Binance's free public API (no key). US Stocks/Forex use Twelve Data — enter your own free API key below (never stored in source code, only in your browser's local database)."));
-  root.appendChild(textField("Twelve Data API Key", s.apiKeys.twelvedata, (v) => (s.apiKeys.twelvedata = v)));
+  root.appendChild(textField("Twelve Data API Key (Primary)", s.apiKeys.twelvedata, (v) => (s.apiKeys.twelvedata = v)));
+  root.appendChild(textField("Twelve Data API Key (Backup, optional)", s.apiKeys.twelvedataBackup, (v) => (s.apiKeys.twelvedataBackup = v)));
+  root.appendChild(el("p", { class: "focus-reason" }, "If you add a second key, the app automatically switches to it whenever the primary key hits its rate limit — no separate step needed."));
   root.appendChild(
     el("a", { href: "https://twelvedata.com/pricing", target: "_blank", class: "link" }, "Get a free Twelve Data API key →")
   );
 
   root.appendChild(el("div", { class: "section-title" }, "Watchlists"));
-  root.appendChild(el("p", { class: "focus-reason" }, "Add or remove the exact symbols CHECK FOR TRADE scans for each market. Changes save immediately."));
+  root.appendChild(el("p", { class: "focus-reason" }, "Add or remove the exact symbols Check for Trade scans for each market. Changes save immediately."));
   const watchlistContainer = el("div", {});
   root.appendChild(watchlistContainer);
   renderWatchlistSection(watchlistContainer, state);
