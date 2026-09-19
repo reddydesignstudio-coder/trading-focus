@@ -75,8 +75,18 @@ function reqToPromise(req) {
   });
 }
 
-export async function put(storeName, value) {
-  return withStore(storeName, "readwrite", (store) => store.put(value));
+// Cloud sync hook points — db.js has ZERO import of cloudSync.js (kept fully
+// standalone/testable with no Firebase dependency). cloudSync.js registers
+// itself here, once, at app startup, if the person has configured it.
+let cloudSyncHooks = null;
+export function setCloudSyncHooks(hooks) {
+  cloudSyncHooks = hooks;
+}
+
+export async function put(storeName, value, options = {}) {
+  const result = await withStore(storeName, "readwrite", (store) => store.put(value));
+  if (!options.skipCloudSync && cloudSyncHooks?.afterPut) cloudSyncHooks.afterPut(storeName, value);
+  return result;
 }
 
 export async function bulkPut(storeName, values) {
@@ -117,8 +127,10 @@ export async function getRangeByIndex(storeName, indexName, lower, upper) {
   return reqToPromise(index.getAll(range));
 }
 
-export async function remove(storeName, key) {
-  return withStore(storeName, "readwrite", (store) => store.delete(key));
+export async function remove(storeName, key, options = {}) {
+  const result = await withStore(storeName, "readwrite", (store) => store.delete(key));
+  if (!options.skipCloudSync && cloudSyncHooks?.afterDelete) cloudSyncHooks.afterDelete(storeName, key);
+  return result;
 }
 
 export async function clearStore(storeName) {

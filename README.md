@@ -100,6 +100,7 @@ trading-app/
 - [`STRATEGIES.md`](docs/STRATEGIES.md) — all 19 strategies, rules, confirmations
 - [`RISK.md`](docs/RISK.md) — risk/position-sizing/confidence documentation
 - [`STORAGE.md`](docs/STORAGE.md) — IndexedDB schema, versioning, export/import
+- [`FIREBASE_SETUP.md`](docs/FIREBASE_SETUP.md) — step-by-step guide to enable cross-device cloud sync
 - [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) — free static hosting instructions
 - [`PWA.md`](docs/PWA.md) — install instructions + notification limitations
 - [`PHASE2_IOS.md`](docs/PHASE2_IOS.md) — native iOS migration plan

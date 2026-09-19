@@ -3,8 +3,8 @@
 Run with: `npm test` (`node --test tests/*.test.js`), Node v22.
 
 ```
-tests 93
-pass 93
+tests 100
+pass 100
 fail 0
 cancelled 0
 skipped 0
@@ -27,7 +27,8 @@ skipped 0
 | `dataProviderRotation.test.js` | Automatic fallback from a rate-limited primary Twelve Data key to the backup key, then to demo data if both are limited |
 | `newStrategies.test.js` | Trigger-condition correctness for Bollinger Mean Reversion, Gap and Go, and EMA 9/20 Momentum Cross |
 | `plainEnglish.test.js` | Every registered strategy (all 19) has a real, jargon-free, direction-aware plain-English explanation — not the generic fallback |
-| `pinLock.test.js` | PIN setup stores a hash (never the plain PIN), correct/incorrect verification, overwriting an existing PIN |
+| `pinLock.test.js` | PIN setup stores a hash (never the plain PIN), correct/incorrect verification, overwriting an existing PIN, enable/disable |
+| `cloudSyncHooks.test.js` | db.js's cloud-sync hook mechanism: `afterPut`/`afterDelete` fire correctly, and `skipCloudSync` suppresses them — this is the loop-prevention logic that stops an incoming sync write from re-triggering an outgoing one |
 | `paperTrading.test.js` | Live Mode refuses to execute a trade sourced from demo data |
 | `scanner.integration.test.js` | End-to-end `CHECK FOR TRADE` pipeline against demo data for all 3 markets — well-formed qualifying setups, zero-qualifying handled without forcing a count |
 
@@ -63,6 +64,18 @@ skipped 0
   structure before shipping, not by a failing test — a good reminder that
   structural/rendering bugs like this need a manual trace, since they don't
   show up in logic-level unit tests.
+
+## What Firebase Cloud Sync is NOT covered by these tests
+
+Everything in `js/cloudSync.js` that talks to a real Firebase project
+(actual sign-in, actual Firestore reads/writes/listeners over the network)
+cannot be tested in this environment — there's no live Firebase project to
+test against, and no internet access in the build sandbox. What IS tested:
+the pure, local logic — the hook mechanism in `db.js` that mirrors writes
+outward and the `skipCloudSync` flag that prevents an incoming sync write
+from re-triggering an outgoing one (`cloudSyncHooks.test.js`). The actual
+network behavior needs verification against a real project — see
+`docs/FIREBASE_SETUP.md`.
 
 ## Manual / structural verification also performed
 

@@ -160,6 +160,29 @@ retail strategy guides emphasize that the original 16 didn't cover.)
   and still "open" on another, since each screen was checking independently
   and out of sync).
 
+## Cloud Sync (Firebase) — optional
+
+- Sync trades, journal, backtests, and settings across iPhone, desktop, and
+  any other device signed into the same Google account — built on Firebase
+  Auth (Google Sign-In) + Firestore, entirely opt-in.
+- **Zero cost when unused**: the Firebase SDK is lazy-loaded only once you
+  actually paste a config into Settings — nobody who doesn't want this pays
+  for it in load time.
+- **PIN stays local on purpose** — it's a per-device lock, not part of your
+  account, so it never syncs.
+- Real-time: a trade closed on your desktop appears on your iPhone within
+  seconds, no manual refresh.
+- Manual "Push This Device's Data" / "Pull Latest From Cloud" buttons for
+  the first-time setup (getting an existing history onto a fresh device, or
+  vice versa).
+- **Honest caveat:** this is the one feature I can't fully test myself — it
+  needs a real Firebase project with real credentials, which only you can
+  create. See `docs/FIREBASE_SETUP.md` for the exact steps. The underlying
+  sync mechanics (the hook that mirrors local writes outward, and the
+  loop-prevention logic that stops incoming sync writes from re-triggering
+  themselves) are unit tested; the live network behavior against a real
+  Firebase project is not, and needs your own verification.
+
 ## Testing
 
 - **88 automated tests**, all passing, covering every engine above — including
@@ -183,7 +206,8 @@ retail strategy guides emphasize that the original 16 didn't cover.)
   (stocks) or OANDA demo (forex), but both need a separate account signup and
   have unverified CORS behavior for direct browser use — flagged as a future
   option, not silently promised.
-- **Cross-device sync, push notifications, hourly background scanning** —
-  all genuinely need a cloud database and/or a scheduled backend; scoped and
-  discussed, not built, since it's a real architecture change (and the first
-  point actual ongoing cost could enter the picture).
+- **Push notifications, hourly background scanning** — genuinely need a
+  scheduled backend (or Firebase Cloud Functions on the paid Blaze plan);
+  scoped and discussed, not built, since it's a separate architecture
+  decision from cross-device sync (which IS now built — see above) and the
+  first point actual ongoing cost could enter the picture.

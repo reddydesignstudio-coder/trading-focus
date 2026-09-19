@@ -4,6 +4,8 @@ import { renderHome, renderScan, renderOthers, renderSettings } from "./ui/views
 import { el } from "./ui/components.js";
 import { checkAndResolveOpenTrades } from "./paperTrading.js";
 import { requirePinUnlock } from "./pinLock.js";
+import * as db from "./db.js";
+import { registerCloudSyncHooks, initFromSavedConfig, onAuthChange, onRemoteChange } from "./cloudSync.js";
 
 const TABS = [
   { id: "home", label: "Home", render: renderHome },
@@ -109,6 +111,25 @@ async function boot() {
   await requirePinUnlock();
 
   state.settings = await loadSettings();
+
+  // Cloud sync: wires db.js's write path to also mirror to Firestore, IF a
+  // config was previously saved (from Settings → Cloud Sync). No-op, and no
+  // Firebase code ever downloaded, if the person hasn't set this up.
+  registerCloudSyncHooks(db);
+  try {
+    const { initialized } = await initFromSavedConfig();
+    if (initialized) {
+      onAuthChange(() => {
+        if (state.currentTab) setTab(state.currentTab); // re-render on sign-in/sign-out so Settings reflects it
+      });
+      onRemoteChange(() => {
+        if (state.currentTab) setTab(state.currentTab); // a change arrived from another device — refresh what's on screen
+      });
+    }
+  } catch (e) {
+    console.warn("Cloud sync init failed", e);
+  }
+
   const hashTab = window.location.hash.replace("#", "");
   const initialTab = TABS.find((t) => t.id === hashTab) ? hashTab : "home";
   buildNav();

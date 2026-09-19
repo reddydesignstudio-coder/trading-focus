@@ -16,6 +16,17 @@ import { strategiesForMarket, ALL_STRATEGIES } from "../strategies/index.js";
 import { exportJSON, exportTradesCSV, importFromJSON, downloadBlob } from "../exportImport.js";
 import { saveSettings } from "../settings.js";
 import { isPinEnabled, verifyPin, setupPin, disablePin } from "../pinLock.js";
+import {
+  getSavedConfig,
+  connectWithConfig,
+  clearConfig,
+  isConnected,
+  currentUser,
+  signInWithGoogle,
+  signOutUser,
+  pullAllOnce,
+  pushAllOnce,
+} from "../cloudSync.js";
 import { fmtUSD, fmtPct, todayKey, uid } from "../utils.js";
 
 // -------------------------------------------------------------- HOME
@@ -1164,6 +1175,11 @@ export async function renderSettings(root, state) {
   root.appendChild(el("label", { class: "field-label" }, "Import JSON backup"));
   root.appendChild(importInput);
 
+  root.appendChild(el("div", { class: "section-title" }, "Cloud Sync (Firebase)"));
+  const cloudContainer = el("div", {});
+  root.appendChild(cloudContainer);
+  await renderCloudSyncSection(cloudContainer, state);
+
   root.appendChild(el("div", { class: "section-title" }, "Security"));
   const securityContainer = el("div", {});
   root.appendChild(securityContainer);
@@ -1171,6 +1187,84 @@ export async function renderSettings(root, state) {
 
   const saveBtn = el("button", { class: "btn btn-primary", onclick: () => state.persistSettings() }, "Save Settings");
   root.appendChild(saveBtn);
+}
+
+async function renderCloudSyncSection(container, state) {
+  container.innerHTML = "";
+  const savedConfig = await getSavedConfig();
+
+  if (!savedConfig) {
+    container.appendChild(
+      el("p", { class: "focus-reason" }, "Not connected. Paste your Firebase project config below to sync trades, journal, and backtests across your iPhone and desktop. See docs/FIREBASE_SETUP.md for step-by-step setup — this is the one piece I can't fully test for you, since it needs your own live Firebase project.")
+    );
+    const textarea = document.createElement("textarea");
+    textarea.className = "input cloud-config-textarea";
+    textarea.placeholder = '{\n  "apiKey": "...",\n  "authDomain": "...",\n  "projectId": "...",\n  ...\n}';
+    const error = el("p", { class: "pin-error" });
+    const connectBtn = el("button", { class: "btn btn-primary", onclick: async () => {
+      error.textContent = "";
+      let config;
+      try {
+        config = JSON.parse(textarea.value);
+      } catch {
+        error.textContent = "That doesn't look like valid JSON — paste the exact config object from your Firebase project settings.";
+        return;
+      }
+      connectBtn.disabled = true;
+      connectBtn.textContent = "Connecting…";
+      try {
+        await connectWithConfig(config);
+        await renderCloudSyncSection(container, state);
+      } catch (e) {
+        error.textContent = "Couldn't connect — double-check the config values and that Firestore/Auth are enabled in your Firebase project.";
+        connectBtn.disabled = false;
+        connectBtn.textContent = "Connect";
+      }
+    } }, "Connect");
+    container.appendChild(textarea);
+    container.appendChild(error);
+    container.appendChild(connectBtn);
+    return;
+  }
+
+  const user = currentUser();
+  if (!user) {
+    container.appendChild(el("p", { class: "focus-reason" }, "Connected to your Firebase project. Sign in to start syncing."));
+    const signInBtn = el("button", { class: "btn btn-primary", onclick: async () => {
+      signInBtn.disabled = true;
+      signInBtn.textContent = "Opening sign-in…";
+      try {
+        await signInWithGoogle();
+        await renderCloudSyncSection(container, state);
+      } catch (e) {
+        signInBtn.disabled = false;
+        signInBtn.textContent = "Sign in with Google";
+        alert("Sign-in failed or was cancelled. Please try again.");
+      }
+    } }, "Sign in with Google");
+    container.appendChild(signInBtn);
+    container.appendChild(
+      el("button", { class: "btn btn-ghost", onclick: async () => { await clearConfig(); await renderCloudSyncSection(container, state); } }, "Disconnect this project")
+    );
+    return;
+  }
+
+  container.appendChild(
+    el("div", { class: "cloud-status-row" }, [
+      el("span", { class: "data-source-dot is-real" }),
+      el("span", {}, `Signed in as ${user.email || user.uid}`),
+    ])
+  );
+  container.appendChild(el("p", { class: "focus-reason" }, "Trades, journal, and backtests now sync automatically across every device signed in with this account. Your PIN stays local to this device on purpose."));
+  container.appendChild(
+    el("div", { class: "security-actions" }, [
+      el("button", { class: "btn", onclick: async () => { await pushAllOnce(); alert("Pushed everything currently on this device to the cloud."); } }, "Push This Device's Data"),
+      el("button", { class: "btn", onclick: async () => { await pullAllOnce(); await renderCloudSyncSection(container, state); alert("Pulled the latest data from the cloud."); } }, "Pull Latest From Cloud"),
+    ])
+  );
+  container.appendChild(
+    el("button", { class: "btn btn-ghost", onclick: async () => { await signOutUser(); await renderCloudSyncSection(container, state); } }, "Sign Out")
+  );
 }
 
 async function renderSecuritySection(container, state) {
