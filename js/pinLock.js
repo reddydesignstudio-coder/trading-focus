@@ -33,9 +33,21 @@ export async function isPinSet() {
   return !!record?.hash;
 }
 
+/** True only when a PIN exists AND the user hasn't turned the lock off from Settings. */
+export async function isPinEnabled() {
+  const record = await get("settings", PIN_KEY);
+  return !!record?.hash && record.enabled !== false;
+}
+
 export async function setupPin(pin) {
   const hash = await sha256Hex(pin);
-  await put("settings", { key: PIN_KEY, hash });
+  await put("settings", { key: PIN_KEY, hash, enabled: true });
+}
+
+/** Turns the lock off without discarding the hash, so Settings can distinguish "never set up" from "off". */
+export async function disablePin() {
+  const record = await get("settings", PIN_KEY);
+  if (record) await put("settings", { ...record, enabled: false });
 }
 
 export async function verifyPin(pin) {
@@ -60,18 +72,30 @@ function isValidPin(pin) {
  */
 export function requirePinUnlock() {
   return new Promise(async (resolve) => {
+    const record = await get("settings", PIN_KEY);
+
+    if (!record?.hash) {
+      // Never configured at all — mandatory first-time setup.
+      const overlay = document.createElement("div");
+      document.body.appendChild(overlay);
+      renderSetupScreen(overlay, () => {
+        overlay.remove();
+        resolve();
+      });
+      return;
+    }
+
+    if (record.enabled === false) {
+      resolve(); // user turned the lock off from Settings — skip straight through
+      return;
+    }
+
     const overlay = document.createElement("div");
     document.body.appendChild(overlay);
-    const finish = () => {
+    renderUnlockScreen(overlay, () => {
       overlay.remove();
       resolve();
-    };
-    const alreadySet = await isPinSet();
-    if (alreadySet) {
-      renderUnlockScreen(overlay, finish);
-    } else {
-      renderSetupScreen(overlay, finish);
-    }
+    });
   });
 }
 

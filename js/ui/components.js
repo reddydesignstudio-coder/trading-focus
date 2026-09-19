@@ -166,9 +166,13 @@ export function tradeRow(trade, live = null) {
         kv("Distance to SL", live && live.distanceToSL !== null ? fmtPrice(live.distanceToSL) : "—"),
       ])
     );
-    if (live && live.paceMs !== null && live.paceMs !== undefined) {
+    if (live && live.paceTargetAt) {
       rows.push(
-        el("p", { class: "pace-note" }, `Typical pace to TP at current volatility: ~${formatHoldingTime(live.paceMs)}. This is a rough historical-volatility estimate, not a prediction — price can move faster, slower, stall, or reverse at any time.`)
+        el("p", { class: "pace-note" }, [
+          "Estimated time to TP at current volatility: ",
+          el("span", { class: "pace-countdown", "data-pace-target": live.paceTargetAt.toISOString() }, formatHoldingTime(live.paceMs)),
+          " — a rough historical-volatility estimate, refreshed periodically as the market moves. Not a prediction — price can move faster, slower, stall, or reverse at any time.",
+        ])
       );
     }
   }

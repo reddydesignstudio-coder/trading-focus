@@ -15,6 +15,7 @@ import { atr, estimatePaceMs } from "../indicators.js";
 import { strategiesForMarket, ALL_STRATEGIES } from "../strategies/index.js";
 import { exportJSON, exportTradesCSV, importFromJSON, downloadBlob } from "../exportImport.js";
 import { saveSettings } from "../settings.js";
+import { isPinEnabled, verifyPin, setupPin, disablePin } from "../pinLock.js";
 import { fmtUSD, fmtPct, todayKey, uid } from "../utils.js";
 
 // -------------------------------------------------------------- HOME
@@ -465,7 +466,7 @@ export async function renderOthers(root, state) {
     const menu = el("div", { class: "others-menu" });
     OTHERS_MENU.forEach((item) => {
       menu.appendChild(
-        el("button", { class: "others-menu-item", onclick: () => { state.othersView = item.id; renderOthers(root, state); } }, [
+        el("button", { class: "others-menu-item", onclick: () => { state.clearIntervals(); state.othersView = item.id; renderOthers(root, state); } }, [
           el("span", { class: "others-menu-icon" }, item.icon),
           el("div", { class: "others-menu-text" }, [el("div", { class: "others-menu-label" }, item.label), el("div", { class: "others-menu-desc" }, item.desc)]),
           el("span", { class: "others-menu-chevron" }, "›"),
@@ -477,7 +478,7 @@ export async function renderOthers(root, state) {
   }
 
   const item = OTHERS_MENU.find((i) => i.id === state.othersView);
-  const backBar = el("button", { class: "back-bar", onclick: () => { state.othersView = null; renderOthers(root, state); } }, "‹ Back to More");
+  const backBar = el("button", { class: "back-bar", onclick: () => { state.clearIntervals(); state.othersView = null; renderOthers(root, state); } }, "‹ Back to More");
   root.appendChild(backBar);
   const subRoot = el("div", {});
   root.appendChild(subRoot);
@@ -616,53 +617,76 @@ export async function renderJournal(root, state) {
     emptyMessage: "No trades match these filters.",
   });
 
-  // Fetch current price for every OPEN trade's symbol (deduped by symbol+market) and
-  // fill in current price + unrealized P&L once it lands, without blocking the initial render.
-  // Patches trade objects in place (by id) so re-rendering never depends on DOM index/order,
-  // which stays correct regardless of the browser's own filtering/pagination state.
   const openTrades = trades.filter((t) => t.status === "OPEN");
   if (!openTrades.length) return;
 
-  const uniqueKeys = [...new Set(openTrades.map((t) => `${t.market}:${t.symbol}`))];
-  await Promise.all(
-    uniqueKeys.map(async (key) => {
-      const [market, symbol] = key.split(":");
-      let price = null;
-      let atrVal = null;
-      const timeframe = market === "us_stocks" ? "15m" : "1h";
-      const timeframeMs = { "15m": 900000, "1h": 3600000 }[timeframe];
-      try {
-        // limit:30 (not just the last candle) so we can also read recent volatility (ATR) for the pace estimate below.
-        const data = await getMarketData({ symbol, market, timeframe, limit: 30, apiKeys: state.settings.apiKeys, forceProviderId: state.settings.dataProviderOverride?.[market] });
-        const candles = data.candles;
-        price = candles?.[candles.length - 1]?.c ?? null;
-        if (candles && candles.length >= 15) {
-          const atrSeries = atr(candles, 14);
-          atrVal = atrSeries[atrSeries.length - 1];
+  // Fetch current price + volatility (ATR) for every OPEN trade's symbol (deduped by
+  // symbol+market), patching trade objects in place (by id, never by DOM index) so
+  // re-rendering is always safe regardless of the browser's filter/pagination state.
+  // Refreshed periodically (not just once) so the pace estimate actually responds to
+  // current market conditions rather than going stale the moment you open the page.
+  async function refreshLiveData() {
+    const uniqueKeys = [...new Set(openTrades.map((t) => `${t.market}:${t.symbol}`))];
+    await Promise.all(
+      uniqueKeys.map(async (key) => {
+        const [market, symbol] = key.split(":");
+        let price = null;
+        let atrVal = null;
+        const timeframe = market === "us_stocks" ? "15m" : "1h";
+        const timeframeMs = { "15m": 900000, "1h": 3600000 }[timeframe];
+        try {
+          // limit:30 (not just the last candle) so we can also read recent volatility (ATR) for the pace estimate below.
+          const data = await getMarketData({ symbol, market, timeframe, limit: 30, apiKeys: state.settings.apiKeys, forceProviderId: state.settings.dataProviderOverride?.[market] });
+          const candles = data.candles;
+          price = candles?.[candles.length - 1]?.c ?? null;
+          if (candles && candles.length >= 15) {
+            const atrSeries = atr(candles, 14);
+            atrVal = atrSeries[atrSeries.length - 1];
+          }
+        } catch {
+          price = null;
         }
-      } catch {
-        price = null;
-      }
-      if (price === null) return;
-      trades.forEach((t) => {
-        if (t.status !== "OPEN" || `${t.market}:${t.symbol}` !== key) return;
-        const risk = Math.abs(t.entryPrice - t.stopLoss);
-        const priceDelta = t.direction === "long" ? price - t.entryPrice : t.entryPrice - price;
-        const distanceToTP = t.takeProfit !== null && t.takeProfit !== undefined ? Math.abs(t.takeProfit - price) : null;
-        const distanceToSL = Math.abs(t.stopLoss - price);
-        const paceMs = estimatePaceMs(distanceToTP, atrVal, timeframeMs);
-        t.__live = {
-          currentPrice: price,
-          unrealizedPnl: priceDelta * t.positionSize,
-          unrealizedR: risk > 0 ? priceDelta / risk : null,
-          distanceToTP,
-          distanceToSL,
-          paceMs,
-        };
-      });
-    })
-  );
-  browser.refresh();
+        if (price === null) return;
+        const now = Date.now();
+        trades.forEach((t) => {
+          if (t.status !== "OPEN" || `${t.market}:${t.symbol}` !== key) return;
+          const risk = Math.abs(t.entryPrice - t.stopLoss);
+          const priceDelta = t.direction === "long" ? price - t.entryPrice : t.entryPrice - price;
+          const distanceToTP = t.takeProfit !== null && t.takeProfit !== undefined ? Math.abs(t.takeProfit - price) : null;
+          const distanceToSL = Math.abs(t.stopLoss - price);
+          const paceMs = estimatePaceMs(distanceToTP, atrVal, timeframeMs);
+          t.__live = {
+            currentPrice: price,
+            unrealizedPnl: priceDelta * t.positionSize,
+            unrealizedR: risk > 0 ? priceDelta / risk : null,
+            distanceToTP,
+            distanceToSL,
+            paceMs,
+            paceTargetAt: paceMs !== null ? new Date(now + paceMs) : null,
+          };
+        });
+      })
+    );
+    browser.refresh();
+  }
+
+  await refreshLiveData();
+
+  // Live-tick every open trade's pace countdown every second (pure client-side
+  // math against the target timestamp — no network call), and refresh the
+  // underlying price/volatility data every 60s so the estimate itself stays
+  // current with actual market conditions, not just a stale one-time snapshot.
+  const tickInterval = setInterval(() => {
+    const now = Date.now();
+    listContainer.querySelectorAll(".pace-countdown[data-pace-target]").forEach((elNode) => {
+      const target = new Date(elNode.getAttribute("data-pace-target")).getTime();
+      const remaining = target - now;
+      elNode.textContent = remaining > 0 ? formatCountdownHMS(remaining) : "due now";
+    });
+  }, 1000);
+  const refreshInterval = setInterval(refreshLiveData, 60000);
+  state.registerInterval(tickInterval);
+  state.registerInterval(refreshInterval);
 }
 
 // -------------------------------------------------------------- DAILY SUMMARY
@@ -1140,8 +1164,97 @@ export async function renderSettings(root, state) {
   root.appendChild(el("label", { class: "field-label" }, "Import JSON backup"));
   root.appendChild(importInput);
 
+  root.appendChild(el("div", { class: "section-title" }, "Security"));
+  const securityContainer = el("div", {});
+  root.appendChild(securityContainer);
+  await renderSecuritySection(securityContainer, state);
+
   const saveBtn = el("button", { class: "btn btn-primary", onclick: () => state.persistSettings() }, "Save Settings");
   root.appendChild(saveBtn);
+}
+
+async function renderSecuritySection(container, state) {
+  container.innerHTML = "";
+  const enabled = await isPinEnabled();
+
+  if (enabled) {
+    container.appendChild(el("p", { class: "focus-reason" }, "PIN lock is ON — you'll need your 6-digit PIN each time you open the app."));
+    container.appendChild(
+      el("div", { class: "security-actions" }, [
+        el("button", { class: "btn", onclick: () => openChangePinModal(container, state) }, "Change PIN"),
+        el("button", { class: "btn btn-ghost", onclick: () => openDisablePinModal(container, state) }, "Turn Off PIN Lock"),
+      ])
+    );
+  } else {
+    container.appendChild(el("p", { class: "focus-reason" }, "PIN lock is OFF — anyone who opens this app on this device can see your trades."));
+    container.appendChild(el("button", { class: "btn btn-primary", onclick: () => openSetupPinModal(container, state) }, "Set Up PIN Lock"));
+  }
+}
+
+function pinModalInput(placeholder) {
+  const input = document.createElement("input");
+  input.type = "password";
+  input.inputMode = "numeric";
+  input.maxLength = 6;
+  input.className = "input pin-modal-input";
+  input.placeholder = placeholder;
+  input.autocomplete = "off";
+  input.addEventListener("input", () => {
+    input.value = input.value.replace(/\D/g, "").slice(0, 6);
+  });
+  return input;
+}
+
+function openChangePinModal(securityContainer, state) {
+  const modal = buildModal("Change PIN");
+  const current = pinModalInput("Current PIN");
+  const next = pinModalInput("New PIN");
+  const confirm = pinModalInput("Confirm New PIN");
+  const error = el("p", { class: "pin-error" });
+  const btn = el("button", { class: "btn btn-primary", onclick: async () => {
+    error.textContent = "";
+    if (!(await verifyPin(current.value))) { error.textContent = "Current PIN is incorrect."; return; }
+    if (!/^\d{6}$/.test(next.value)) { error.textContent = "New PIN must be exactly 6 digits."; return; }
+    if (next.value !== confirm.value) { error.textContent = "New PINs don't match."; return; }
+    await setupPin(next.value);
+    modal.overlay.remove();
+    await renderSecuritySection(securityContainer, state);
+  } }, "Update PIN");
+  [current, next, confirm, error, btn].forEach((n) => modal.body.appendChild(n));
+  document.body.appendChild(modal.overlay);
+}
+
+function openDisablePinModal(securityContainer, state) {
+  const modal = buildModal("Turn Off PIN Lock");
+  modal.body.appendChild(el("p", { class: "focus-reason" }, "Enter your current PIN to confirm. You can turn it back on anytime from here."));
+  const current = pinModalInput("Current PIN");
+  const error = el("p", { class: "pin-error" });
+  const btn = el("button", { class: "btn btn-primary", onclick: async () => {
+    error.textContent = "";
+    if (!(await verifyPin(current.value))) { error.textContent = "Incorrect PIN."; return; }
+    await disablePin();
+    modal.overlay.remove();
+    await renderSecuritySection(securityContainer, state);
+  } }, "Turn Off");
+  [current, error, btn].forEach((n) => modal.body.appendChild(n));
+  document.body.appendChild(modal.overlay);
+}
+
+function openSetupPinModal(securityContainer, state) {
+  const modal = buildModal("Set Up PIN Lock");
+  const next = pinModalInput("New PIN");
+  const confirm = pinModalInput("Confirm PIN");
+  const error = el("p", { class: "pin-error" });
+  const btn = el("button", { class: "btn btn-primary", onclick: async () => {
+    error.textContent = "";
+    if (!/^\d{6}$/.test(next.value)) { error.textContent = "PIN must be exactly 6 digits."; return; }
+    if (next.value !== confirm.value) { error.textContent = "PINs don't match."; return; }
+    await setupPin(next.value);
+    modal.overlay.remove();
+    await renderSecuritySection(securityContainer, state);
+  } }, "Turn On PIN Lock");
+  [next, confirm, error, btn].forEach((n) => modal.body.appendChild(n));
+  document.body.appendChild(modal.overlay);
 }
 
 function numberField(label, value, onChange) {
