@@ -38,3 +38,21 @@ test("scanMarket never fabricates a qualifying count — 0 qualifying is a valid
   });
   assert.ok(result.qualifying.length >= 0); // no crash; count is whatever genuinely qualified
 });
+
+test("scanNotableActivity returns a purely factual, non-strategy shape (no direction/entry/confidence fields)", async () => {
+  const { scanNotableActivity } = await import("../js/scanner.js");
+  const result = await scanNotableActivity({
+    market: "crypto",
+    watchlist: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"],
+    apiKeys: {},
+    forceProviderId: "demo",
+  });
+  for (const item of result) {
+    assert.ok(item.symbol);
+    assert.ok(item.rvol >= 1.5 || item.regime === "Breakout");
+    // Deliberately must NOT look like a trade signal — no direction, no entry/stop/target, no confidence score.
+    assert.equal(item.direction, undefined);
+    assert.equal(item.entryZone, undefined);
+    assert.equal(item.confidence, undefined);
+  }
+});

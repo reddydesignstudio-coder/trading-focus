@@ -60,8 +60,21 @@ const DEFAULT_PROVIDER_FOR_MARKET = {
 
 const cache = new Map(); // key -> { data, fetchedAt }
 const inFlight = new Map(); // key -> Promise
-const lastCallAt = new Map(); // providerId -> timestamp
-const callLog = new Map(); // providerId -> [timestamps within last 60s]
+const lastCallAt = new Map(); // bucket -> timestamp
+const callLog = new Map(); // bucket -> [timestamps within last 60s]
+const totalCallsSession = new Map(); // bucket -> cumulative count since this page load
+
+// Documented free-tier limits, for DISPLAY only (Settings shows "X used this
+// session" against these) — not enforced here; enforcement is just the
+// throttle/retry/fallback behavior already in place. FMP doesn't
+// consistently publish a free-tier number, so it's shown as count-only.
+const DOCUMENTED_LIMITS = {
+  finnhub: { window: "minute", limit: 60 },
+  twelvedata: { window: "day", limit: 800 },
+  fmp: { window: null, limit: null },
+  alphavantage: { window: "day", limit: 25 },
+  binance: { window: null, limit: null },
+};
 
 // twelvedata ~8/min => ~7.5s spacing. finnhub 60/min => ~1s spacing (far more
 // headroom). fmp and alphavantage rate limits aren't consistently published,
@@ -91,12 +104,32 @@ function recordCall(providerId, apiKey) {
   const log = (callLog.get(bucket) || []).filter((t) => now - t < 60000);
   log.push(now);
   callLog.set(bucket, log);
+  totalCallsSession.set(bucket, (totalCallsSession.get(bucket) || 0) + 1);
 }
 
 export function callsInLastMinute(providerId, apiKey) {
   const bucket = throttleKey(providerId, apiKey);
   const now = Date.now();
   return (callLog.get(bucket) || []).filter((t) => now - t < 60000).length;
+}
+
+/**
+ * Usage snapshot for one provider+key, for display in Settings — "X
+ * requests made this session" against the provider's documented free-tier
+ * limit (where one is consistently published). This is informational only,
+ * reset on page reload; it doesn't track the provider's actual server-side
+ * quota (which we have no way to read directly), just what THIS app has
+ * sent since it was last loaded.
+ */
+export function getUsageStats(providerId, apiKey) {
+  const bucket = throttleKey(providerId, apiKey);
+  const doc = DOCUMENTED_LIMITS[providerId] || {};
+  return {
+    totalThisSession: totalCallsSession.get(bucket) || 0,
+    inLastMinute: callsInLastMinute(providerId, apiKey),
+    limitWindow: doc.window || null,
+    limitValue: doc.limit || null,
+  };
 }
 
 async function throttle(providerId, apiKey) {
@@ -114,6 +147,7 @@ function friendlyError(err) {
     return { code: "PROVIDER_ERROR", message: "Market data temporarily unavailable." };
   }
   if (err.name === "AbortError") return { code: "CANCELLED", message: "Request cancelled." };
+  if (err.name === "TimeoutError") return { code: "TIMEOUT", message: "Market data provider took too long to respond. Trying the next option." };
   return { code: "UNKNOWN", message: "Market data temporarily unavailable." };
 }
 
@@ -146,10 +180,14 @@ async function callProviderWithRetry({ providerId, apiKey, symbol, market, timef
     try {
       await throttle(providerId, apiKey);
       recordCall(providerId, apiKey);
-      return await provider.getCandles({ symbol, market, timeframe, limit, apiKey, signal });
+      // Hard client-side timeout — without this, a provider that hangs (no
+      // response, stuck connection) leaves the whole scan waiting forever
+      // with zero feedback, since a bare fetch() has no timeout of its own.
+      return await withTimeout(provider.getCandles({ symbol, market, timeframe, limit, apiKey, signal }), REQUEST_TIMEOUT_MS);
     } catch (err) {
       lastErr = err;
       if (err.name === "AbortError") throw err;
+      if (err.name === "TimeoutError") break; // don't retry a hang against the same provider — move to the next one in the chain immediately
       attempt += 1;
       if (attempt <= MAX_RETRIES) {
         const backoff = Math.min(6000, 500 * 2 ** attempt) + Math.random() * 250;
@@ -159,6 +197,28 @@ async function callProviderWithRetry({ providerId, apiKey, symbol, market, timef
   }
   const friendly = friendlyError(lastErr);
   return { candles: [], status: "UNAVAILABLE", isDemo: false, asOf: new Date(), source: providerId, reason: friendly.code };
+}
+
+const REQUEST_TIMEOUT_MS = 10000; // one provider hanging costs at most this long before the chain moves on — never indefinite
+
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const err = new Error("Request timed out");
+      err.name = "TimeoutError";
+      reject(err);
+    }, ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
 }
 
 /**

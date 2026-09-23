@@ -277,3 +277,40 @@ function sessionLabelForMarket(market, flags) {
   if (market === "us_stocks") return flags.ny ? "US Regular Session" : "Outside Regular Hours";
   return "24/7";
 }
+
+/**
+ * "Notable Activity" — a deliberately lightweight, purely FACTUAL scan:
+ * which watchlist symbols currently show elevated relative volume or sit
+ * in a Breakout regime, right now. This is NOT a trade recommendation and
+ * runs no strategy/confirmation/confidence logic at all — it's the same
+ * kind of observation a "top movers" ticker on any market site would show.
+ * Only fires on explicit user request (a button tap on Home), never
+ * automatically, to respect free-tier rate limits.
+ */
+export async function scanNotableActivity({ market, watchlist, apiKeys, forceProviderId, signal }) {
+  const timeframe = TIMEFRAME_BY_MARKET[market];
+  const results = await Promise.all(
+    watchlist.map(async (symbol) => {
+      try {
+        const data = await getMarketData({ symbol, market, timeframe, limit: 60, apiKeys, forceProviderId, signal });
+        if (!data.candles || data.candles.length < 30) return null;
+        const indicators = computeIndicatorSet(data.candles);
+        const regimeResult = classifyRegime(data.candles, indicators);
+        const rvol = indicators.rvol20[indicators.rvol20.length - 1];
+        const notable = (rvol !== null && rvol >= 1.5) || regimeResult.regime === "Breakout";
+        if (!notable) return null;
+        return {
+          symbol,
+          rvol,
+          regime: regimeResult.regime,
+          currentPrice: data.candles[data.candles.length - 1].c,
+          isDemo: !!data.isDemo,
+          dataStatus: data.status,
+        };
+      } catch {
+        return null;
+      }
+    })
+  );
+  return results.filter(Boolean).sort((a, b) => (b.rvol || 0) - (a.rvol || 0));
+}

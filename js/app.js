@@ -8,10 +8,10 @@ import * as db from "./db.js";
 import { registerCloudSyncHooks, initFromSavedConfig, onAuthChange, onRemoteChange } from "./cloudSync.js";
 
 const TABS = [
-  { id: "home", label: "Home", render: renderHome },
-  { id: "scan", label: "Scan", render: renderScan },
-  { id: "others", label: "More", render: renderOthers },
-  { id: "settings", label: "Settings", render: renderSettings },
+  { id: "home", label: "Home", icon: "🏠", render: renderHome },
+  { id: "scan", label: "Scan", icon: "🔎", render: renderScan },
+  { id: "others", label: "More", icon: "📚", render: renderOthers },
+  { id: "settings", label: "Settings", icon: "⚙️", render: renderSettings },
 ];
 
 const state = {
@@ -31,6 +31,9 @@ const state = {
   },
   goToSettings() {
     setTab("settings");
+  },
+  goToHome() {
+    setTab("home");
   },
   goToOthers(view) {
     state.othersView = view;
@@ -60,7 +63,10 @@ function buildNav() {
   navRoot.innerHTML = "";
   TABS.forEach((tab) => {
     const onClick = tab.id === "others" ? () => { state.othersView = null; setTab("others"); } : () => setTab(tab.id);
-    const btn = el("button", { class: `nav-btn ${tab.id === state.currentTab ? "active" : ""}`, onclick: onClick }, tab.label);
+    const btn = el("button", { class: `nav-btn ${tab.id === state.currentTab ? "active" : ""}`, onclick: onClick }, [
+      el("span", { class: "nav-btn-icon" }, tab.icon),
+      el("span", {}, tab.label),
+    ]);
     navRoot.appendChild(btn);
   });
 }

@@ -160,6 +160,55 @@ retail strategy guides emphasize that the original 16 didn't cover.)
   and still "open" on another, since each screen was checking independently
   and out of sync).
 
+## Home page, Account Balance, and Performance additions
+
+- **Fixed the real "Scan hangs forever" bug** — there was genuinely no
+  timeout anywhere in the data layer, so a slow/unresponsive provider
+  could leave a scan waiting indefinitely with zero feedback. Added a
+  hard 10-second timeout per provider attempt that skips straight to the
+  next provider in the chain (no wasted retries against a hung
+  connection).
+- **Fixed a real race condition in Reset Trade Data + Cloud Sync** —
+  deletions used to fire-and-forget to Firestore; if the page reloaded
+  right after a reset, an in-flight cloud deletion could get cut off,
+  and the very next sync from another device would silently restore the
+  "deleted" trades. `db.js` now properly awaits each cloud deletion
+  before the reset flow continues, and the reset no longer forces a full
+  page reload (which would've also meant re-entering your PIN
+  unnecessarily) — it just returns you to Home once everything is
+  actually gone, both locally and in the cloud.
+- **Account Balance is inline, not a popup** — tapping it expands a
+  Closed Trades section directly on the Home page (scrolls to it), showing
+  only closed trades (never open ones) with the exact date/time each one
+  closed, filterable by Live/Test/date range, paginated 10 at a time.
+- **Session Results on the Performance Dashboard** — a new table (using
+  the same `breakdownBySession` data that was already being computed,
+  just not displayed there before) showing win % by trading session,
+  sorted highest-win%-first among sessions with at least 3 completed
+  trades — this is the direct answer to "which window do I actually win
+  more in."
+- **Live Mode trades/day is now configurable** (1/2/5) in Settings, with
+  a note that this loosens the original one-trade-per-day discipline
+  guardrail — still fully enforced, just against whichever number is
+  chosen.
+- **"Data Sources" card removed from Home** per request; real-vs-demo
+  status remains visible via badges on every Scan result and signal card.
+- **Market Pulse on Home** — two new, deliberately separate things:
+  - **News headlines** (Finnhub, if a key is configured) — shown exactly
+    as reported, no sentiment scoring, no "this means buy/sell X."
+  - **Notable Activity** (button-triggered, not automatic) — a purely
+    factual, non-strategy scan of your current-focus market's watchlist
+    for elevated relative volume or a Breakout regime, explicitly labeled
+    "not a trade recommendation." No direction, entry, stop, target, or
+    confidence score is ever attached to these — that's deliberate and
+    tested, to keep this from ever reading as a stock pick.
+- **API usage tracking** — Settings now shows "X requests made this
+  session" next to each provider key, against its documented free-tier
+  limit where one exists.
+- **Bottom nav has a bit of color now** — each tab gets an icon and its
+  own muted accent color when active, without going back to the flashy
+  palette from earlier.
+
 ## Latest additions (data providers, Journal, Backtest, Reset)
 
 - **Multi-provider fallback chain for Stocks/Forex** — Finnhub, Twelve Data

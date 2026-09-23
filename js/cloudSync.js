@@ -209,10 +209,10 @@ export function registerCloudSyncHooks(dbModule) {
   dbModule.setCloudSyncHooks({
     afterPut: (storeName, value) => {
       const keyField = KEY_FIELD_BY_STORE[storeName];
-      if (keyField) pushToCloud(storeName, keyField, value);
+      if (keyField) return pushToCloud(storeName, keyField, value);
     },
     afterDelete: (storeName, key) => {
-      if (KEY_FIELD_BY_STORE[storeName]) deleteFromCloud(storeName, key);
+      if (KEY_FIELD_BY_STORE[storeName]) return deleteFromCloud(storeName, key);
     },
   });
 }

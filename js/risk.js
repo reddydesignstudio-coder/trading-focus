@@ -14,6 +14,7 @@ export const DEFAULT_RISK_SETTINGS = {
   maxRiskOverrideUSD: null, // if set, hard-caps risk regardless of % (defaults to riskPercent-derived cap)
   defaultRR: 2,
   maxRR: 3,
+  liveModeDailyLimit: 1, // configurable 1/2/5 in Settings — still hard-enforced, just against a chosen number
 };
 
 export function maxDollarRisk(settings = DEFAULT_RISK_SETTINGS) {

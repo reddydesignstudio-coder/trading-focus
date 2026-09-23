@@ -27,7 +27,8 @@ import { getMarketData } from "./dataProviders/index.js";
 import { resolveAgainstCandles, computeTradeOutcome } from "./tradeResolution.js";
 import { TIMEFRAME_BY_MARKET } from "./scanner.js";
 
-export const LIVE_MODE_DAILY_LIMIT = 1;
+export const LIVE_MODE_DAILY_LIMIT_DEFAULT = 1;
+export const LIVE_MODE_LIMIT_OPTIONS = [1, 2, 5];
 export const TEST_MODE_OPTIONS = [1, 2, 5, 10];
 
 export async function getTradesForDay(dateKey, mode) {
@@ -35,23 +36,30 @@ export async function getTradesForDay(dateKey, mode) {
   return mode ? all.filter((t) => t.mode === mode) : all;
 }
 
-export async function getLiveModeStatus(timeZone = DEFAULT_TIMEZONE) {
+/**
+ * `dailyLimit` defaults to 1 (the original "one completed trade per day"
+ * discipline this app was built around) but is configurable in Settings up
+ * to 5 — that's a deliberate loosening of the original design the person
+ * can opt into, not a bug; the discipline is still enforced exactly as
+ * strictly, just against whatever number they've chosen.
+ */
+export async function getLiveModeStatus(timeZone = DEFAULT_TIMEZONE, dailyLimit = LIVE_MODE_DAILY_LIMIT_DEFAULT) {
   const dateKey = todayKey(new Date(), timeZone);
   const trades = await getTradesForDay(dateKey, "live");
   // AMBIGUOUS counts as "done for the day" too — it fully played out (TP and
   // SL both fell in one candle with no finer data to tell which came first);
-  // it just doesn't have a determinable win/loss. It should still use up the
-  // day's one trade rather than silently allowing a second.
+  // it just doesn't have a determinable win/loss. It should still use up a
+  // slot rather than silently allowing an extra trade.
   const completed = trades.filter((t) => t.status === "WIN" || t.status === "LOSS" || t.status === "AMBIGUOUS");
   const open = trades.filter((t) => t.status === "OPEN");
 
-  if (completed.length >= LIVE_MODE_DAILY_LIMIT) {
-    return { available: false, reason: "COMPLETED_FOR_TODAY", completedTrade: completed[0], dateKey };
+  if (completed.length >= dailyLimit) {
+    return { available: false, reason: "COMPLETED_FOR_TODAY", completedTrade: completed[completed.length - 1], dateKey, dailyLimit, completedCount: completed.length };
   }
-  if (open.length >= LIVE_MODE_DAILY_LIMIT) {
-    return { available: false, reason: "TRADE_OPEN", openTrade: open[0], dateKey };
+  if (open.length >= dailyLimit) {
+    return { available: false, reason: "TRADE_OPEN", openTrade: open[0], dateKey, dailyLimit };
   }
-  return { available: true, dateKey };
+  return { available: true, dateKey, dailyLimit, completedCount: completed.length };
 }
 
 export async function getTestModeStatus(dailyLimit, timeZone = DEFAULT_TIMEZONE) {
@@ -67,16 +75,16 @@ export async function getTestModeStatus(dailyLimit, timeZone = DEFAULT_TIMEZONE)
  * inside the entry zone) — the caller must have already re-validated
  * sizing/R:R via risk.recalculateTrade before calling this.
  */
-export async function executeTrade({ signal, actualEntry, sizing, mode, timeZone = DEFAULT_TIMEZONE }) {
+export async function executeTrade({ signal, actualEntry, sizing, mode, timeZone = DEFAULT_TIMEZONE, liveModeDailyLimit = LIVE_MODE_DAILY_LIMIT_DEFAULT }) {
   if (mode === "live") {
     if (signal.isDemo) {
       throw new Error(
-        "Live Mode requires real market data. This signal was generated from simulated Demo data (no data-provider API key configured), so it can't be executed as a Live Mode trade. Add a free Twelve Data API key in Settings, or use Test Mode to practice with demo data."
+        "Live Mode requires real market data. This signal was generated from simulated Demo data (no data-provider API key configured), so it can't be executed as a Live Mode trade. Add a free data-provider API key in Settings, or use Test Mode to practice with demo data."
       );
     }
-    const status = await getLiveModeStatus(timeZone);
+    const status = await getLiveModeStatus(timeZone, liveModeDailyLimit);
     if (!status.available) {
-      throw new Error(status.reason === "COMPLETED_FOR_TODAY" ? "Live Mode already completed for today." : "A Live Mode trade is already open today.");
+      throw new Error(status.reason === "COMPLETED_FOR_TODAY" ? `Live Mode already completed its ${liveModeDailyLimit}-trade limit for today.` : "A Live Mode trade is already open today.");
     }
   }
 

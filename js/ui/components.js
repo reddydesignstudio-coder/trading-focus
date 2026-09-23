@@ -196,6 +196,7 @@ export function tradeRow(trade, live = null) {
           ? `${formatHoldingTime(Date.now() - new Date(trade.createdAt))} so far`
           : "—"
       ),
+      kv("Closed At", trade.resolvedAt ? new Date(trade.resolvedAt).toLocaleString() : "—"),
     ])
   );
 

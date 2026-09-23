@@ -140,3 +140,65 @@ test("no configured keys at all -> UNAVAILABLE/NO_API_KEY, not a crash, before d
   assert.equal(result.status, "UNAVAILABLE");
   assert.equal(result.reason, "NO_API_KEY");
 });
+
+test("a provider that never responds times out instead of hanging the scan forever", async () => {
+  const restore = stubFetchByHost([
+    ["twelvedata.com", () => new Promise(() => {})], // never resolves — simulates a hung request
+  ]);
+  try {
+    const { getMarketData, invalidateCache } = await import("../js/dataProviders/index.js?t=" + Date.now());
+    invalidateCache();
+    const start = Date.now();
+    const result = await getMarketData({
+      symbol: "AAPL",
+      market: "us_stocks",
+      timeframe: "15m",
+      limit: 30,
+      apiKeys: { twelvedata: "td-key" },
+      allowDemoFallback: true,
+    });
+    const elapsed = Date.now() - start;
+    assert.equal(result.isDemo, true); // fell through to demo rather than hanging forever
+    assert.ok(elapsed < 20000, `expected the timeout to resolve well under 20s, took ${elapsed}ms`);
+  } finally {
+    restore();
+  }
+});
+
+test("getUsageStats tracks cumulative calls per provider+key and reports the documented limit", async () => {
+  const restore = stubFetchByHost([
+    [
+      "twelvedata.com",
+      () =>
+        jsonResponse(200, {
+          status: "ok",
+          values: Array.from({ length: 30 }, (_, i) => ({
+            datetime: `2026-01-0${(i % 9) + 1} 10:${String(i).padStart(2, "0")}:00`,
+            open: 100,
+            high: 101,
+            low: 99,
+            close: 100.5,
+            volume: 1000,
+          })),
+        }),
+    ],
+  ]);
+  try {
+    const { getMarketData, getUsageStats, invalidateCache } = await import("../js/dataProviders/index.js?t=" + Date.now());
+    invalidateCache();
+    let usage = getUsageStats("twelvedata", "my-key");
+    assert.equal(usage.totalThisSession, 0);
+    assert.equal(usage.limitValue, 800);
+    assert.equal(usage.limitWindow, "day");
+
+    await getMarketData({ symbol: "AAPL", market: "us_stocks", timeframe: "15m", limit: 30, apiKeys: { twelvedata: "my-key" }, allowDemoFallback: false });
+    usage = getUsageStats("twelvedata", "my-key");
+    assert.equal(usage.totalThisSession, 1);
+
+    // a different key for the same provider tracks separately
+    const otherKeyUsage = getUsageStats("twelvedata", "different-key");
+    assert.equal(otherKeyUsage.totalThisSession, 0);
+  } finally {
+    restore();
+  }
+});

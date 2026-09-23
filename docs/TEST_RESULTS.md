@@ -3,8 +3,8 @@
 Run with: `npm test` (`node --test tests/*.test.js`), Node v22.
 
 ```
-tests 115
-pass 115
+tests 118
+pass 118
 fail 0
 cancelled 0
 skipped 0
@@ -81,6 +81,18 @@ skipped 0
   went from ~10ms to ~7.5s after the multi-provider chain was added, which
   was the tell that something outside the test itself had regressed.
   Fixed by scoping the throttle bucket to provider+key together.
+- **No request timeout anywhere in the data layer** — a hung provider
+  request (slow network, stuck connection) could leave an entire scan
+  waiting forever with the button stuck on "Scanning…" and nothing ever
+  appearing — this matched a real report of "nothing loading" on the
+  Scan page. Fixed with a hard 10-second timeout per attempt that moves
+  straight to the next provider in the chain rather than retrying a hang.
+- **Reset Trade Data racing against Cloud Sync** — cloud deletions were
+  fire-and-forget; reloading the page immediately after a reset could cut
+  an in-flight Firestore deletion short, and the next real-time sync from
+  another device would quietly restore the trades that were just
+  "deleted." Fixed by having `db.js` actually await each cloud hook
+  before `put()`/`remove()` resolve.
 
 ## What Firebase Cloud Sync is NOT covered by these tests
 

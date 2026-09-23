@@ -85,7 +85,14 @@ export function setCloudSyncHooks(hooks) {
 
 export async function put(storeName, value, options = {}) {
   const result = await withStore(storeName, "readwrite", (store) => store.put(value));
-  if (!options.skipCloudSync && cloudSyncHooks?.afterPut) cloudSyncHooks.afterPut(storeName, value);
+  // Awaited deliberately — pushToCloud/deleteFromCloud never throw (they
+  // log and swallow their own errors), so this never makes a local write
+  // fail because of a cloud problem. What it DOES fix: callers that need
+  // to know the cloud copy is actually gone before doing something else
+  // (e.g. Reset Trade Data reloading the page) can now just `await put()`
+  // / `await remove()` and be sure of that, instead of the cloud call
+  // still being in flight in the background when the page navigates away.
+  if (!options.skipCloudSync && cloudSyncHooks?.afterPut) await cloudSyncHooks.afterPut(storeName, value);
   return result;
 }
 
@@ -129,7 +136,7 @@ export async function getRangeByIndex(storeName, indexName, lower, upper) {
 
 export async function remove(storeName, key, options = {}) {
   const result = await withStore(storeName, "readwrite", (store) => store.delete(key));
-  if (!options.skipCloudSync && cloudSyncHooks?.afterDelete) cloudSyncHooks.afterDelete(storeName, key);
+  if (!options.skipCloudSync && cloudSyncHooks?.afterDelete) await cloudSyncHooks.afterDelete(storeName, key);
   return result;
 }
 

@@ -2,15 +2,16 @@
 import { el, signalCard, statCard, funnelBar, tradeRow, dataStatusBadge } from "./components.js";
 import { computeMarketFocus, assessTradingWindow } from "../marketFocus.js";
 import { formatClock, formatCountdownHMS, computeKeySessionCountdowns } from "../timezone.js";
-import { scanMarket, DEFAULT_WATCHLISTS } from "../scanner.js";
-import { getLiveModeStatus, executeTrade, markSignalMissed, saveSignal, TEST_MODE_OPTIONS, checkAndResolveOpenTrades, resetTradeData } from "../paperTrading.js";
+import { scanMarket, DEFAULT_WATCHLISTS, scanNotableActivity } from "../scanner.js";
+import { fetchMarketNews } from "../newsFeed.js";
+import { getLiveModeStatus, executeTrade, markSignalMissed, saveSignal, TEST_MODE_OPTIONS, LIVE_MODE_LIMIT_OPTIONS, checkAndResolveOpenTrades, resetTradeData } from "../paperTrading.js";
 import { recalculateTrade } from "../risk.js";
 import { getDailySummary } from "../dailySummary.js";
 import { getAll, put, remove } from "../db.js";
 import { computePerformance, formatHoldingTime } from "../performance.js";
 import { getStrategyLab } from "../strategyLab.js";
 import { runBacktest } from "../backtest.js";
-import { getMarketData } from "../dataProviders/index.js";
+import { getMarketData, getUsageStats } from "../dataProviders/index.js";
 import { atr, estimatePaceMs } from "../indicators.js";
 import { detectPatternsAt } from "../candlestick.js";
 import { strategiesForMarket, ALL_STRATEGIES } from "../strategies/index.js";
@@ -35,7 +36,7 @@ import { fmtUSD, fmtPct, todayKey, uid } from "../utils.js";
 export async function renderHome(root, state) {
   root.innerHTML = "";
   const tz = state.effectiveTimeZone();
-  const liveStatus = await getLiveModeStatus(tz);
+  const liveStatus = await getLiveModeStatus(tz, state.settings.risk.liveModeDailyLimit);
   const summary = await getDailySummary({ timeZone: tz, startingBalance: state.settings.risk.accountBalance, mode: "live" });
   const allTrades = await getAll("trades");
   const liveTrades = allTrades.filter((t) => t.mode === "live");
@@ -87,61 +88,139 @@ export async function renderHome(root, state) {
 
   // ---- Stats ----
   const statsGrid = el("div", { class: "stats-grid" }, [
-    statCard("Account Balance", fmtUSD(livePerf.endingBalance), `${liveTrades.filter((t) => t.status === "WIN" || t.status === "LOSS" || t.status === "AMBIGUOUS").length} closed trades · tap to view`, () =>
-      openBalanceModal(allTrades, state)
+    statCard(
+      "Account Balance",
+      fmtUSD(livePerf.endingBalance),
+      `${liveTrades.filter((t) => t.status === "WIN" || t.status === "LOSS" || t.status === "AMBIGUOUS").length} closed trades · tap to view`,
+      () => toggleClosedTradesSection()
     ),
     statCard("Today's P&L", fmtUSD(summary.metrics.netPnL)),
     statCard("Today's Win %", summary.metrics.winPct === null ? "N/A" : fmtPct(summary.metrics.winPct)),
-    statCard("Live Mode", liveStatus.available ? "Available" : "Completed", liveStatus.available ? "1 trade available today" : liveStatus.reason.replace(/_/g, " ")),
+    statCard(
+      "Live Mode",
+      liveStatus.available ? "Available" : "Completed",
+      liveStatus.available
+        ? `${(liveStatus.dailyLimit || 1) - (liveStatus.completedCount || 0)} of ${liveStatus.dailyLimit || 1} trade(s) left today`
+        : liveStatus.reason.replace(/_/g, " ")
+    ),
   ]);
   root.appendChild(statsGrid);
 
-  // ---- Data Status — unambiguous real-vs-demo, per market ----
-  root.appendChild(el("div", { class: "section-title" }, "Data Sources — Real or Demo?"));
-  root.appendChild(dataSourcesCard(state));
+  // ---- Closed Trades — inline, not a popup, toggled by tapping Account Balance ----
+  const closedTradesSection = el("div", { class: "closed-trades-section", style: "display:none" });
+  root.appendChild(closedTradesSection);
+  let closedTradesBuilt = false;
+  function toggleClosedTradesSection() {
+    const isOpen = closedTradesSection.style.display !== "none";
+    if (isOpen) {
+      closedTradesSection.style.display = "none";
+      return;
+    }
+    closedTradesSection.style.display = "block";
+    if (!closedTradesBuilt) {
+      closedTradesBuilt = true;
+      closedTradesSection.appendChild(el("div", { class: "section-title" }, "Closed Trades"));
+      closedTradesSection.appendChild(el("p", { class: "focus-reason" }, "Every closed trade, with the date/time it closed. Open trades aren't shown here — see Journal for those."));
+      const closedOnly = allTrades.filter((t) => t.status !== "OPEN").sort((a, b) => new Date(b.resolvedAt || b.createdAt) - new Date(a.resolvedAt || a.createdAt));
+      const container = el("div", {});
+      closedTradesSection.appendChild(container);
+      renderTradeLogBrowser(container, closedOnly, {
+        modeOptions: [
+          { value: "all", label: "All Modes" },
+          { value: "live", label: "Live Mode" },
+          { value: "test", label: "Test Mode" },
+        ],
+        getMode: (t) => t.mode,
+        emptyMessage: "No closed trades yet.",
+      });
+    }
+    closedTradesSection.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // ---- Market Pulse: factual news headlines + non-predictive "notable activity" ----
+  root.appendChild(el("div", { class: "section-title" }, "Market Pulse"));
+  root.appendChild(marketPulseNewsCard(state));
+  root.appendChild(marketPulseActivityCard(state, focus.focus.market));
 }
 
-function dataSourcesCard(state) {
-  const hasKey = !!(state.settings.apiKeys.twelvedata || state.settings.apiKeys.twelvedataBackup);
-  const rows = [
-    { label: "Crypto", real: true, note: "Binance public API — always real, no setup needed" },
-    { label: "US Stocks", real: hasKey && state.settings.dataProviderOverride?.us_stocks !== "demo", note: hasKey ? "Twelve Data (delayed, real)" : "No API key set — showing simulated demo data" },
-    { label: "Forex", real: hasKey && state.settings.dataProviderOverride?.forex !== "demo", note: hasKey ? "Twelve Data (delayed, real)" : "No API key set — showing simulated demo data" },
-  ];
-  const card = el("div", { class: "card data-sources-card" });
-  rows.forEach((r) => {
-    card.appendChild(
-      el("div", { class: "data-source-row" }, [
-        el("span", { class: `data-source-dot ${r.real ? "is-real" : "is-demo"}` }),
-        el("span", { class: "data-source-label" }, r.label),
-        el("span", { class: `data-source-tag ${r.real ? "is-real" : "is-demo"}` }, r.real ? "Real" : "Demo"),
-        el("span", { class: "data-source-note" }, r.note),
-      ])
-    );
-  });
-  if (!hasKey) {
-    card.appendChild(el("button", { class: "btn btn-primary", style: "margin-top:10px;width:100%", onclick: () => state.goToSettings() }, "Add free API key for real Stocks/Forex data →"));
+function marketPulseNewsCard(state) {
+  const card = el("div", { class: "card market-pulse-card" });
+  const finnhubKey = state.settings.apiKeys.finnhub;
+  if (!finnhubKey) {
+    card.appendChild(el("p", { class: "focus-reason" }, "Add a free Finnhub API key in Settings to see real market headlines here — this app never invents news."));
+    card.appendChild(el("button", { class: "btn", onclick: () => state.goToSettings() }, "Add Finnhub key →"));
+    return card;
   }
+  card.appendChild(el("p", { class: "loading-inline" }, "Loading headlines…"));
+  fetchMarketNews(finnhubKey)
+    .then((result) => {
+      card.innerHTML = "";
+      if (!result.available) {
+        card.appendChild(el("p", { class: "focus-reason" }, "Couldn't load news right now (this is just headlines — it never affects any signal or scan)."));
+        return;
+      }
+      if (!result.articles.length) {
+        card.appendChild(el("p", { class: "empty-state" }, "No headlines returned right now."));
+        return;
+      }
+      result.articles.forEach((a) => {
+        card.appendChild(
+          el("a", { href: a.url, target: "_blank", class: "news-item" }, [
+            el("div", { class: "news-headline" }, a.headline),
+            el("div", { class: "news-meta" }, `${a.source} · ${a.datetime.toLocaleString()}`),
+          ])
+        );
+      });
+    })
+    .catch(() => {
+      card.innerHTML = "";
+      card.appendChild(el("p", { class: "focus-reason" }, "Couldn't load news right now."));
+    });
   return card;
 }
 
-function openBalanceModal(allTrades, state) {
-  const modal = buildModal("All Trades");
-  modal.body.appendChild(
-    el("p", { class: "focus-reason" }, "Every trade ever recorded, most recent first. Filter by mode or date range, and load more 10 at a time.")
+function marketPulseActivityCard(state, market) {
+  const card = el("div", { class: "card market-pulse-card" });
+  card.appendChild(el("div", { class: "provider-subheading" }, `Notable Activity — ${labelForMarket(market)}`));
+  card.appendChild(
+    el("p", { class: "focus-reason" }, "Symbols in your watchlist currently showing elevated volume or a breakout regime, right now. This is a factual observation, not a trade recommendation — always run Check for Trade before acting on anything.")
   );
-  const container = el("div", {});
-  modal.body.appendChild(container);
-  const sorted = [...allTrades].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  renderTradeLogBrowser(container, sorted, {
-    modeOptions: [
-      { value: "all", label: "All Modes" },
-      { value: "live", label: "Live Mode" },
-      { value: "test", label: "Test Mode" },
-    ],
-    getMode: (t) => t.mode,
-  });
-  document.body.appendChild(modal.overlay);
+  const resultsWrap = el("div", {});
+  const btn = el("button", { class: "btn", onclick: async () => {
+    btn.disabled = true;
+    btn.textContent = "Checking…";
+    resultsWrap.innerHTML = "";
+    try {
+      const watchlist = state.settings.watchlists?.[market] || DEFAULT_WATCHLISTS[market];
+      const activity = await scanNotableActivity({
+        market,
+        watchlist,
+        apiKeys: state.settings.apiKeys,
+        forceProviderId: state.settings.dataProviderOverride?.[market],
+      });
+      if (!activity.length) {
+        resultsWrap.appendChild(el("p", { class: "empty-state" }, "Nothing showing elevated activity in your watchlist right now."));
+      } else {
+        activity.forEach((a) => {
+          resultsWrap.appendChild(
+            el("div", { class: "activity-row" }, [
+              el("span", { class: "ticker" }, a.symbol),
+              el("span", { class: "activity-detail" }, a.rvol >= 1.5 ? `${a.rvol.toFixed(2)}x volume` : a.regime),
+              dataStatusBadge(a.isDemo ? "DEMO" : a.dataStatus),
+            ])
+          );
+        });
+      }
+    } catch {
+      resultsWrap.appendChild(el("p", { class: "notice notice-error" }, "Couldn't check activity right now — try again shortly."));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Check Notable Activity";
+    }
+  } }, "Check Notable Activity");
+  card.appendChild(btn);
+  card.appendChild(resultsWrap);
+  return card;
 }
 
 function labelForMarket(m) {
@@ -314,14 +393,25 @@ export async function renderScan(root, state) {
       const dataBadgeRow = el("div", { class: "data-status-row" }, [dataStatusBadge(result.isDemo ? "DEMO" : result.perSymbol[0]?.dataStatus)]);
       resultsWrap.appendChild(dataBadgeRow);
 
+      const candleTimeframe = market === "us_stocks" ? "15-minute" : "1-hour";
+      const candleSpan = market === "us_stocks" ? "≈7–8 trading days" : "≈8 days";
+      resultsWrap.appendChild(
+        el(
+          "p",
+          { class: "scan-context-note" },
+          `Scanned the last 200 ${candleTimeframe} candles per symbol (${candleSpan} of history) across ${result.symbolsScanned} symbol(s).`
+        )
+      );
+
       if (result.qualifying.length === 0) {
         resultsWrap.appendChild(
           el("div", { class: "no-trade-card" }, [
             el("div", { class: "no-trade-title" }, "No Qualifying Trade"),
-            el("p", {}, `Scanned ${result.symbolsScanned} symbols. No setup met the minimum confirmation, risk/reward, or no-trade filter requirements right now — see the breakdown below for exactly why each symbol was passed over.`),
+            el("p", {}, `No setup met the minimum confirmation, risk/reward, or no-trade filter requirements right now — see the breakdown below for exactly why each symbol was passed over.`),
           ])
         );
       } else {
+        resultsWrap.appendChild(el("p", { class: "scan-context-note" }, `${result.qualifying.length} qualifying setup${result.qualifying.length === 1 ? "" : "s"} found.`));
         result.qualifying.forEach((sig) => {
           resultsWrap.appendChild(
             signalCard(sig, {
@@ -332,7 +422,7 @@ export async function renderScan(root, state) {
               },
               blockedReason:
                 state.tradeMode === "live" && sig.isDemo
-                  ? "Live Mode can't execute a trade on Demo data. Switch to Test Mode, or add a Twelve Data API key in Settings."
+                  ? "Live Mode can't execute a trade on Demo data. Switch to Test Mode, or add a real data API key in Settings."
                   : null,
             })
           );
@@ -436,7 +526,7 @@ function openTradeModal(signal, state) {
     const latestSizing = recalc();
     if (!latestSizing) return;
     try {
-      const trade = await executeTrade({ signal, actualEntry: parseFloat(entryInput.value), sizing: latestSizing, mode: state.tradeMode, timeZone: state.effectiveTimeZone() });
+      const trade = await executeTrade({ signal, actualEntry: parseFloat(entryInput.value), sizing: latestSizing, mode: state.tradeMode, timeZone: state.effectiveTimeZone(), liveModeDailyLimit: state.settings.risk.liveModeDailyLimit });
       alert(`Trade recorded (${state.tradeMode === "live" ? "Live Mode" : "Test Mode"}). Track it in the Journal tab.`);
       modal.overlay.remove();
     } catch (e) {
@@ -851,6 +941,23 @@ export async function renderPerformance(root, state) {
   root.appendChild(breakdownTable(perf.breakdownByStrategy));
   root.appendChild(el("div", { class: "section-title" }, "Market Results"));
   root.appendChild(breakdownTable(perf.breakdownByMarket));
+  root.appendChild(el("div", { class: "section-title" }, "Session Results — which window wins more"));
+  root.appendChild(el("p", { class: "focus-reason" }, "Sorted by win % (highest first) among sessions with at least 3 completed trades, so a single lucky trade doesn't look like a pattern."));
+  root.appendChild(sessionBreakdownTable(perf.breakdownBySession));
+}
+
+/** Same shape as breakdownTable, but sorted by win % (sessions with too few trades to mean anything stay unsorted at the bottom, not misleadingly on top). */
+function sessionBreakdownTable(rows) {
+  if (!rows.length) return el("p", { class: "empty-state" }, "No completed trades yet.");
+  const sorted = [...rows].sort((a, b) => {
+    const aReliable = a.trades >= 3 && a.winPct !== null;
+    const bReliable = b.trades >= 3 && b.winPct !== null;
+    if (aReliable && !bReliable) return -1;
+    if (!aReliable && bReliable) return 1;
+    if (aReliable && bReliable) return b.winPct - a.winPct;
+    return b.trades - a.trades;
+  });
+  return breakdownTable(sorted);
 }
 
 function equityCurveSVG(curve) {
@@ -1214,19 +1321,24 @@ export async function renderSettings(root, state) {
 
   root.appendChild(el("div", { class: "provider-subheading" }, "Finnhub (tried first — 60 requests/min free)"));
   root.appendChild(textField("Finnhub API Key", s.apiKeys.finnhub, (v) => (s.apiKeys.finnhub = v)));
+  root.appendChild(usageLine("finnhub", s.apiKeys.finnhub));
   root.appendChild(el("a", { href: "https://finnhub.io/register", target: "_blank", class: "link" }, "Get a free Finnhub API key →"));
 
   root.appendChild(el("div", { class: "provider-subheading" }, "Twelve Data (~8 requests/min free)"));
   root.appendChild(textField("Twelve Data API Key (Primary)", s.apiKeys.twelvedata, (v) => (s.apiKeys.twelvedata = v)));
+  root.appendChild(usageLine("twelvedata", s.apiKeys.twelvedata));
   root.appendChild(textField("Twelve Data API Key (Backup, optional)", s.apiKeys.twelvedataBackup, (v) => (s.apiKeys.twelvedataBackup = v)));
+  root.appendChild(usageLine("twelvedata", s.apiKeys.twelvedataBackup));
   root.appendChild(el("a", { href: "https://twelvedata.com/pricing", target: "_blank", class: "link" }, "Get a free Twelve Data API key →"));
 
   root.appendChild(el("div", { class: "provider-subheading" }, "Financial Modeling Prep"));
   root.appendChild(textField("FMP API Key", s.apiKeys.fmp, (v) => (s.apiKeys.fmp = v)));
+  root.appendChild(usageLine("fmp", s.apiKeys.fmp));
   root.appendChild(el("a", { href: "https://site.financialmodelingprep.com/developer/docs/pricing", target: "_blank", class: "link" }, "Get a free FMP API key →"));
 
   root.appendChild(el("div", { class: "provider-subheading" }, "Alpha Vantage (tried last — free tier is only 25 requests/DAY)"));
   root.appendChild(textField("Alpha Vantage API Key", s.apiKeys.alphavantage, (v) => (s.apiKeys.alphavantage = v)));
+  root.appendChild(usageLine("alphavantage", s.apiKeys.alphavantage));
   root.appendChild(el("a", { href: "https://www.alphavantage.co/support/#api-key", target: "_blank", class: "link" }, "Get a free Alpha Vantage API key →"));
 
   root.appendChild(el("div", { class: "section-title" }, "Watchlists"));
@@ -1234,6 +1346,17 @@ export async function renderSettings(root, state) {
   const watchlistContainer = el("div", {});
   root.appendChild(watchlistContainer);
   renderWatchlistSection(watchlistContainer, state);
+
+  root.appendChild(el("div", { class: "section-title" }, "Live Mode Trades/Day"));
+  root.appendChild(
+    el("p", { class: "focus-reason" }, "The original design locks Live Mode to 1 completed trade/day as a trading-discipline guardrail. You can raise it here if you'd rather — the limit is still hard-enforced, just against whichever number you pick.")
+  );
+  const liveModeSelect = el(
+    "select",
+    { class: "input", onchange: (e) => (s.risk.liveModeDailyLimit = parseInt(e.target.value, 10)) },
+    LIVE_MODE_LIMIT_OPTIONS.map((n) => el("option", { value: n, selected: n === s.risk.liveModeDailyLimit ? "selected" : null }, String(n)))
+  );
+  root.appendChild(liveModeSelect);
 
   root.appendChild(el("div", { class: "section-title" }, "Test Mode Trades/Day"));
   const testModeSelect = el(
@@ -1260,7 +1383,7 @@ export async function renderSettings(root, state) {
   root.appendChild(
     el("p", { class: "focus-reason" }, "Erases every paper trade — open and closed — plus signal history. Your watchlists/symbols, risk settings, API keys, and saved backtests are NOT affected. Export a backup above first if you want to keep a copy.")
   );
-  root.appendChild(el("button", { class: "btn btn-danger", onclick: () => openResetTradeDataModal() }, "Reset Trade Data…"));
+  root.appendChild(el("button", { class: "btn btn-danger", onclick: () => openResetTradeDataModal(state) }, "Reset Trade Data…"));
 
   root.appendChild(el("div", { class: "section-title" }, "Cloud Sync (Firebase)"));
   const cloudContainer = el("div", {});
@@ -1384,7 +1507,7 @@ function pinModalInput(placeholder) {
   return input;
 }
 
-function openResetTradeDataModal() {
+function openResetTradeDataModal(state) {
   const modal = buildModal("Reset Trade Data");
   modal.body.appendChild(
     el("p", { class: "focus-reason" }, "This permanently erases every open and closed paper trade and all signal history on this device (and from the cloud, if Cloud Sync is on). Your watchlists, risk settings, API keys, and saved backtests are kept. This can't be undone — export a backup first if you're not sure.")
@@ -1401,10 +1524,14 @@ function openResetTradeDataModal() {
     }
     btn.disabled = true;
     btn.textContent = "Resetting…";
+    // resetTradeData() now awaits each cloud deletion (not fire-and-forget)
+    // before resolving, so by the time we get here every deletion has
+    // actually reached Firestore too — safe to move on without a full page
+    // reload, which would also force a PIN re-entry unnecessarily.
     const result = await resetTradeData();
     modal.overlay.remove();
-    alert(`Cleared ${result.tradesCleared} trade(s) and ${result.signalsCleared} signal(s). Your symbols and settings were not touched.`);
-    window.location.reload();
+    alert(`Cleared ${result.tradesCleared} trade(s) and ${result.signalsCleared} signal(s). Your symbols and settings were not touched. Account Balance is back to your configured starting balance.`);
+    state.goToHome();
   } }, "Erase All Trade Data");
   modal.body.appendChild(confirmInput);
   modal.body.appendChild(error);
@@ -1470,6 +1597,14 @@ function numberField(label, value, onChange) {
     el("input", { class: "input", type: "number", value, oninput: (e) => onChange(parseFloat(e.target.value)) }),
   ]);
 }
+/** Shows "X requests made this session" (and, when a limit is documented, "of Y/window") for one provider+key, next to its field in Settings. Nothing shown if the key is blank. */
+function usageLine(providerId, apiKey) {
+  if (!apiKey) return null;
+  const usage = getUsageStats(providerId, apiKey);
+  const limitText = usage.limitValue ? ` of ~${usage.limitValue}/${usage.limitWindow} (documented free-tier limit)` : "";
+  return el("p", { class: "usage-line" }, `${usage.totalThisSession} request${usage.totalThisSession === 1 ? "" : "s"} made this session${limitText}.`);
+}
+
 function textField(label, value, onChange) {
   return el("div", { class: "field" }, [
     el("label", { class: "field-label" }, label),
