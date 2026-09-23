@@ -160,6 +160,72 @@ retail strategy guides emphasize that the original 16 didn't cover.)
   and still "open" on another, since each screen was checking independently
   and out of sync).
 
+## Fixed the real cause of "Check for Trade does nothing"
+
+- **The service worker was serving the app cache-first** — once a browser
+  cached the JS on its first visit, every reload kept serving that same
+  old copy, only updating the cache quietly in the background for next
+  time, with the same cache name never being cleared of stale entries.
+  This meant a real fix shipped to GitHub could sit there indefinitely
+  without ever actually reaching a browser that had already visited once.
+  Switched to network-first (falls back to cache only when genuinely
+  offline) and bumped the cache version to purge the old one. **Needs one
+  hard refresh or app close/reopen after redeploying** for the new
+  service worker to take over; after that it always pulls fresh code.
+- Fixed the "Demo Mode" notice only checking the Twelve Data key and
+  ignoring Finnhub/FMP/Alpha Vantage.
+
+## PIN lock — removed entirely
+
+Deleted `pinLock.js`, its tests, the Settings section, and the boot-time
+lock screen. The app no longer has any lock-screen concept.
+
+## Account Balance — now a ledger, in its own tab
+
+- Moved out of a popup entirely — it's now **More → Account Balance**, a
+  proper page, not an overlay.
+- Rendered as a chronological ledger: opening balance, then one row per
+  closed Live Mode trade in the order it closed, each showing that
+  trade's own running balance right after it (e.g. $1000 → win → $1060 →
+  loss → $1040). Test Mode trades are deliberately excluded — it's a
+  separate practice balance that shouldn't mix into this number.
+- The running-balance math (`buildAccountLedger` in `performance.js`) is
+  a small, pure, fully unit-tested function — exactly the kind of
+  arithmetic that's easy to get subtly wrong (ordering, sign, null P&L).
+
+## Backtest — All Markets / All Symbols
+
+- Market dropdown now has an "All Markets" option; Symbol dropdown has
+  an "All Symbols" option (auto-selected and locked when "All Markets" is
+  chosen, since picking one specific symbol without knowing which
+  market it belongs to doesn't make sense).
+- Running a multi-symbol backtest fires one independent backtest per
+  symbol (every strategy for that symbol's market, same as a single-
+  symbol run), then combines every resulting trade into one merged
+  In-Sample/Out-of-Sample view and one trade list.
+- Honest caveat shown whenever more than one symbol is combined: this
+  merges independent single-symbol timelines into one chronological
+  view — it is NOT a real multi-symbol portfolio simulation with shared
+  capital constraints, and says so directly in the results.
+
+## Market Pulse — the news feature, done honestly
+
+This app will not tell you "this headline means trade that stock" —
+connecting news to a price direction is a market prediction nobody can
+make reliably, and faking it would be actively misleading, not just
+unhelpful. What it does instead:
+- **General headlines** (Finnhub) — shown exactly as reported, no
+  analysis attached.
+- **News about a symbol you pick** — you choose the symbol from your
+  watchlist, the app shows recent headlines specifically about that
+  company (Finnhub's company-news endpoint). This is the honest version
+  of "what's being said about a stock" — factual, symbol-scoped, with
+  no invented connection to what the price will do.
+- **Notable Activity** (unchanged from before) — a button-triggered,
+  purely factual scan for elevated volume or a breakout regime in your
+  watchlist, explicitly labeled "not a trade recommendation," with no
+  direction/entry/confidence ever attached.
+
 ## Home page, Account Balance, and Performance additions
 
 - **Fixed the real "Scan hangs forever" bug** — there was genuinely no

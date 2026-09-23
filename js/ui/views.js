@@ -3,12 +3,12 @@ import { el, signalCard, statCard, funnelBar, tradeRow, dataStatusBadge } from "
 import { computeMarketFocus, assessTradingWindow } from "../marketFocus.js";
 import { formatClock, formatCountdownHMS, computeKeySessionCountdowns } from "../timezone.js";
 import { scanMarket, DEFAULT_WATCHLISTS, scanNotableActivity } from "../scanner.js";
-import { fetchMarketNews } from "../newsFeed.js";
+import { fetchMarketNews, fetchCompanyNews } from "../newsFeed.js";
 import { getLiveModeStatus, executeTrade, markSignalMissed, saveSignal, TEST_MODE_OPTIONS, LIVE_MODE_LIMIT_OPTIONS, checkAndResolveOpenTrades, resetTradeData } from "../paperTrading.js";
 import { recalculateTrade } from "../risk.js";
 import { getDailySummary } from "../dailySummary.js";
 import { getAll, put, remove } from "../db.js";
-import { computePerformance, formatHoldingTime } from "../performance.js";
+import { computePerformance, formatHoldingTime, buildAccountLedger } from "../performance.js";
 import { getStrategyLab } from "../strategyLab.js";
 import { runBacktest } from "../backtest.js";
 import { getMarketData, getUsageStats } from "../dataProviders/index.js";
@@ -17,7 +17,6 @@ import { detectPatternsAt } from "../candlestick.js";
 import { strategiesForMarket, ALL_STRATEGIES } from "../strategies/index.js";
 import { exportJSON, exportTradesCSV, importFromJSON, downloadBlob } from "../exportImport.js";
 import { saveSettings } from "../settings.js";
-import { isPinEnabled, verifyPin, setupPin, disablePin } from "../pinLock.js";
 import {
   getSavedConfig,
   connectWithConfig,
@@ -91,8 +90,8 @@ export async function renderHome(root, state) {
     statCard(
       "Account Balance",
       fmtUSD(livePerf.endingBalance),
-      `${liveTrades.filter((t) => t.status === "WIN" || t.status === "LOSS" || t.status === "AMBIGUOUS").length} closed trades · tap to view`,
-      () => toggleClosedTradesSection()
+      `${liveTrades.filter((t) => t.status === "WIN" || t.status === "LOSS" || t.status === "AMBIGUOUS").length} closed trades · tap for ledger`,
+      () => state.goToOthers("ledger")
     ),
     statCard("Today's P&L", fmtUSD(summary.metrics.netPnL)),
     statCard("Today's Win %", summary.metrics.winPct === null ? "N/A" : fmtPct(summary.metrics.winPct)),
@@ -106,40 +105,10 @@ export async function renderHome(root, state) {
   ]);
   root.appendChild(statsGrid);
 
-  // ---- Closed Trades — inline, not a popup, toggled by tapping Account Balance ----
-  const closedTradesSection = el("div", { class: "closed-trades-section", style: "display:none" });
-  root.appendChild(closedTradesSection);
-  let closedTradesBuilt = false;
-  function toggleClosedTradesSection() {
-    const isOpen = closedTradesSection.style.display !== "none";
-    if (isOpen) {
-      closedTradesSection.style.display = "none";
-      return;
-    }
-    closedTradesSection.style.display = "block";
-    if (!closedTradesBuilt) {
-      closedTradesBuilt = true;
-      closedTradesSection.appendChild(el("div", { class: "section-title" }, "Closed Trades"));
-      closedTradesSection.appendChild(el("p", { class: "focus-reason" }, "Every closed trade, with the date/time it closed. Open trades aren't shown here — see Journal for those."));
-      const closedOnly = allTrades.filter((t) => t.status !== "OPEN").sort((a, b) => new Date(b.resolvedAt || b.createdAt) - new Date(a.resolvedAt || a.createdAt));
-      const container = el("div", {});
-      closedTradesSection.appendChild(container);
-      renderTradeLogBrowser(container, closedOnly, {
-        modeOptions: [
-          { value: "all", label: "All Modes" },
-          { value: "live", label: "Live Mode" },
-          { value: "test", label: "Test Mode" },
-        ],
-        getMode: (t) => t.mode,
-        emptyMessage: "No closed trades yet.",
-      });
-    }
-    closedTradesSection.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
-
   // ---- Market Pulse: factual news headlines + non-predictive "notable activity" ----
   root.appendChild(el("div", { class: "section-title" }, "Market Pulse"));
   root.appendChild(marketPulseNewsCard(state));
+  root.appendChild(marketPulseCompanyNewsCard(state, focus.focus.market));
   root.appendChild(marketPulseActivityCard(state, focus.focus.market));
 }
 
@@ -176,6 +145,63 @@ function marketPulseNewsCard(state) {
       card.innerHTML = "";
       card.appendChild(el("p", { class: "focus-reason" }, "Couldn't load news right now."));
     });
+  return card;
+}
+
+function marketPulseCompanyNewsCard(state, market) {
+  const card = el("div", { class: "card market-pulse-card" });
+  const finnhubKey = state.settings.apiKeys.finnhub;
+  card.appendChild(el("div", { class: "provider-subheading" }, "News About a Symbol You Pick"));
+  card.appendChild(
+    el(
+      "p",
+      { class: "focus-reason" },
+      "This app deliberately doesn't tell you which symbols a headline \"means\" to trade — connecting news to a price direction is a prediction nobody can make reliably, and faking it would be worse than not having it. What it CAN do honestly: show you recent headlines specifically about a symbol you choose."
+    )
+  );
+  if (!finnhubKey) {
+    card.appendChild(el("button", { class: "btn", onclick: () => state.goToSettings() }, "Add Finnhub key →"));
+    return card;
+  }
+  if (market === "crypto") {
+    card.appendChild(el("p", { class: "empty-state" }, "Company news isn't available for crypto symbols via this data source."));
+    return card;
+  }
+  const symbols = state.settings.watchlists?.[market] || DEFAULT_WATCHLISTS[market];
+  const symbolSelect = el("select", { class: "input" }, symbols.map((s) => el("option", { value: s }, s)));
+  const resultsWrap = el("div", {});
+  const loadFor = (symbol) => {
+    resultsWrap.innerHTML = "";
+    resultsWrap.appendChild(el("p", { class: "loading-inline" }, `Loading news about ${symbol}…`));
+    fetchCompanyNews(symbol, finnhubKey)
+      .then((result) => {
+        resultsWrap.innerHTML = "";
+        if (!result.available) {
+          resultsWrap.appendChild(el("p", { class: "focus-reason" }, "Couldn't load news for this symbol right now."));
+          return;
+        }
+        if (!result.articles.length) {
+          resultsWrap.appendChild(el("p", { class: "empty-state" }, `No recent headlines found for ${symbol}.`));
+          return;
+        }
+        result.articles.forEach((a) => {
+          resultsWrap.appendChild(
+            el("a", { href: a.url, target: "_blank", class: "news-item" }, [
+              el("div", { class: "news-headline" }, a.headline),
+              el("div", { class: "news-meta" }, `${a.source} · ${a.datetime.toLocaleString()}`),
+            ])
+          );
+        });
+      })
+      .catch(() => {
+        resultsWrap.innerHTML = "";
+        resultsWrap.appendChild(el("p", { class: "focus-reason" }, "Couldn't load news for this symbol right now."));
+      });
+  };
+  symbolSelect.addEventListener("change", (e) => loadFor(e.target.value));
+  card.appendChild(symbolSelect);
+  card.appendChild(resultsWrap);
+  if (symbols.length) loadFor(symbols[0]);
   return card;
 }
 
@@ -225,6 +251,10 @@ function marketPulseActivityCard(state, market) {
 
 function labelForMarket(m) {
   return { us_stocks: "US Stocks", forex: "Forex", crypto: "Crypto" }[m] || m;
+}
+
+function hasAnyStockForexKey(apiKeys) {
+  return !!(apiKeys.finnhub || apiKeys.twelvedata || apiKeys.twelvedataBackup || apiKeys.fmp || apiKeys.alphavantage);
 }
 
 // -------------------------------------------------------------- SCAN
@@ -345,7 +375,7 @@ export async function renderScan(root, state) {
 
   root.appendChild(scanLegend());
 
-  const isDemoForThisMarket = state.settings.dataProviderOverride?.[market] === "demo" || (market !== "crypto" && !state.settings.apiKeys.twelvedata && !state.settings.apiKeys.twelvedataBackup);
+  const isDemoForThisMarket = state.settings.dataProviderOverride?.[market] === "demo" || (market !== "crypto" && !hasAnyStockForexKey(state.settings.apiKeys));
 
   if (isDemoForThisMarket) {
     root.appendChild(
@@ -554,12 +584,68 @@ function friendlyErrorMessage(e) {
 
 // -------------------------------------------------------------- OTHERS (menu + sub-views)
 const OTHERS_MENU = [
+  { id: "ledger", label: "Account Balance", icon: "💰", desc: "Running balance ledger, one entry per closed trade", render: renderAccountLedger },
   { id: "journal", label: "Journal", icon: "📔", desc: "Every trade you've taken, in one list", render: renderJournal },
   { id: "daily", label: "Today", icon: "📅", desc: "Today's signal funnel and trades", render: renderDailySummary },
   { id: "performance", label: "Performance", icon: "📈", desc: "Win rate, P&L, equity curve over time", render: renderPerformance },
   { id: "backtest", label: "Backtest", icon: "🧪", desc: "Test a strategy against historical data", render: renderBacktest },
   { id: "lab", label: "Strategy Lab", icon: "🔬", desc: "Factual performance per strategy", render: renderStrategyLab },
 ];
+
+/**
+ * Account Balance as a chronological ledger — opening balance, then one
+ * line per CLOSED Live Mode trade in the order it closed, each showing
+ * the running balance after that trade. Live Mode only (Test Mode is a
+ * separate practice balance, mixing them into one "balance" wouldn't be
+ * meaningful) — deliberately not a popup, its own place in the More menu.
+ */
+export async function renderAccountLedger(root, state) {
+  root.innerHTML = "";
+  root.appendChild(el("div", { class: "section-title" }, "Account Balance"));
+  root.appendChild(el("p", { class: "focus-reason" }, "Live Mode only — Test Mode keeps a separate practice balance that doesn't mix in here. Each row is one closed trade and the balance right after it."));
+
+  const startingBalance = state.settings.risk.accountBalance;
+  const allTrades = await getAll("trades");
+  const liveCompleted = allTrades
+    .filter((t) => t.mode === "live" && (t.status === "WIN" || t.status === "LOSS" || t.status === "AMBIGUOUS"))
+    .sort((a, b) => new Date(a.resolvedAt || a.createdAt) - new Date(b.resolvedAt || b.createdAt));
+
+  root.appendChild(
+    el("div", { class: "card ledger-header" }, [el("span", {}, "Opening Balance"), el("span", { class: "ledger-balance" }, fmtUSD(startingBalance))])
+  );
+
+  if (!liveCompleted.length) {
+    root.appendChild(el("p", { class: "empty-state" }, "No closed Live Mode trades yet — balance is still at the opening amount."));
+    return;
+  }
+
+  let running = startingBalance;
+  const ledgerList = el("div", { class: "ledger-list" });
+  const { entries, endingBalance } = buildAccountLedger(liveCompleted, startingBalance);
+  entries.forEach(({ trade: t, runningBalance }) => {
+    const statusClass = { WIN: "status-win", LOSS: "status-loss", AMBIGUOUS: "status-ambiguous" }[t.status] || "";
+    const statusLabel = { WIN: "Win", LOSS: "Loss", AMBIGUOUS: "Ambiguous" }[t.status] || t.status;
+    ledgerList.appendChild(
+      el("div", { class: `ledger-row ${statusClass}` }, [
+        el("div", { class: "ledger-row-top" }, [
+          el("span", { class: "ledger-date" }, new Date(t.resolvedAt || t.createdAt).toLocaleString()),
+          el("span", { class: `status-pill ${statusClass}` }, statusLabel),
+        ]),
+        el("div", { class: "ledger-row-detail" }, [
+          el("span", { class: "ticker" }, t.symbol),
+          el("span", { class: `dir-pill dir-${t.direction}` }, t.direction === "long" ? "Long" : "Short"),
+          el("span", { class: t.pnl >= 0 ? "ledger-pnl-pos" : "ledger-pnl-neg" }, t.pnl !== null && t.pnl !== undefined ? fmtUSD(t.pnl) : "—"),
+          el("span", { class: "ledger-running" }, fmtUSD(runningBalance)),
+        ]),
+      ])
+    );
+  });
+  root.appendChild(ledgerList);
+
+  root.appendChild(
+    el("div", { class: "card ledger-header" }, [el("span", {}, "Current Balance"), el("span", { class: "ledger-balance" }, fmtUSD(endingBalance))])
+  );
+}
 
 export async function renderOthers(root, state) {
   root.innerHTML = "";
@@ -985,18 +1071,42 @@ function equityCurveSVG(curve) {
 export async function renderBacktest(root, state) {
   root.innerHTML = "";
   root.appendChild(el("div", { class: "section-title" }, "Backtest"));
-  root.appendChild(el("p", { class: "focus-reason" }, "Tests every strategy for the selected market against that symbol's real history — no manual strategy picking needed."));
+  root.appendChild(el("p", { class: "focus-reason" }, "Tests every strategy for the selected market(s) against real history — no manual strategy picking needed. Pick a single symbol, every symbol in a market, or every symbol across all three markets."));
 
-  const marketSelect = el("select", { class: "input" }, ["us_stocks", "forex", "crypto"].map((m) => el("option", { value: m }, labelForMarket(m))));
+  const MARKET_OPTIONS = ["us_stocks", "forex", "crypto"];
+  const marketSelect = el(
+    "select",
+    { class: "input" },
+    [el("option", { value: "all" }, "All Markets"), ...MARKET_OPTIONS.map((m) => el("option", { value: m }, labelForMarket(m)))]
+  );
   const symbolSelect = el("select", { class: "input" });
 
   function refreshSymbols() {
     symbolSelect.innerHTML = "";
+    if (marketSelect.value === "all") {
+      symbolSelect.appendChild(el("option", { value: "all" }, "All Symbols (every watchlist, every market)"));
+      symbolSelect.disabled = true;
+      return;
+    }
+    symbolSelect.disabled = false;
+    symbolSelect.appendChild(el("option", { value: "all" }, "All Symbols in this market"));
     const symbols = state.settings.watchlists?.[marketSelect.value] || DEFAULT_WATCHLISTS[marketSelect.value];
     symbols.forEach((sym) => symbolSelect.appendChild(el("option", { value: sym }, sym)));
   }
   marketSelect.addEventListener("change", refreshSymbols);
   refreshSymbols();
+
+  function buildCombos() {
+    const market = marketSelect.value;
+    const symbol = symbolSelect.value;
+    const markets = market === "all" ? MARKET_OPTIONS : [market];
+    const combos = [];
+    markets.forEach((m) => {
+      const syms = market === "all" || symbol === "all" ? state.settings.watchlists?.[m] || DEFAULT_WATCHLISTS[m] : [symbol];
+      syms.forEach((s) => combos.push({ market: m, symbol: s }));
+    });
+    return combos;
+  }
 
   const runBtn = el("button", { class: "btn btn-primary", onclick: runIt }, "Run Backtest");
   const resultsWrap = el("div", { class: "backtest-results" });
@@ -1005,7 +1115,7 @@ export async function renderBacktest(root, state) {
   root.appendChild(marketSelect);
   root.appendChild(el("label", { class: "field-label" }, "Symbol"));
   root.appendChild(symbolSelect);
-  root.appendChild(el("p", { class: "focus-reason" }, "Add or remove symbols in Settings → Watchlists — this dropdown always matches your current watchlist for the selected market."));
+  root.appendChild(el("p", { class: "focus-reason" }, "Add or remove symbols in Settings → Watchlists — these dropdowns always match your current watchlists."));
   root.appendChild(runBtn);
   root.appendChild(resultsWrap);
 
@@ -1020,63 +1130,111 @@ export async function renderBacktest(root, state) {
     resultsWrap.innerHTML = "";
     lastRun = null;
     runBtn.disabled = true;
-    runBtn.textContent = "Running…";
-    try {
-      const market = marketSelect.value;
-      const symbol = symbolSelect.value;
-      const strategyIds = strategiesForMarket(market).map((s) => s.id); // always test every strategy for this market
-      const timeframe = market === "us_stocks" ? "15m" : "1h";
-      const data = await getMarketData({ symbol, market, timeframe, limit: 500, apiKeys: state.settings.apiKeys, forceProviderId: state.settings.dataProviderOverride?.[market] });
-      if (!data.candles || data.candles.length < 65) {
-        resultsWrap.appendChild(el("div", { class: "notice notice-error" }, "Not enough historical candles available for this symbol/timeframe."));
-        return;
-      }
-      const result = runBacktest({ candles: data.candles, strategyIds, market, symbol, riskSettings: state.settings.risk });
-      if (result.error) {
-        resultsWrap.appendChild(el("div", { class: "notice notice-error" }, result.error));
-        return;
-      }
-      resultsWrap.appendChild(dataStatusBadge(data.isDemo ? "DEMO" : data.status));
-      resultsWrap.appendChild(el("div", { class: "section-title" }, `In-Sample (${result.inSample.count} trades)`));
-      resultsWrap.appendChild(backtestStatsBlock(result.inSample.performance));
-      resultsWrap.appendChild(el("div", { class: "section-title" }, `Out-of-Sample (${result.outOfSample.count} trades)`));
-      resultsWrap.appendChild(backtestStatsBlock(result.outOfSample.performance));
+    const combos = buildCombos();
+    const startingBalance = state.settings.risk.accountBalance;
 
-      resultsWrap.appendChild(el("div", { class: "section-title" }, `All Trades (${result.trades.length})`));
-      if (result.trades.length) {
-        const tradeListContainer = el("div", {});
-        resultsWrap.appendChild(tradeListContainer);
-        renderTradeLogBrowser(tradeListContainer, [...result.trades].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)), {
-          modeOptions: [
-            { value: "all", label: "All Trades" },
-            { value: "inSample", label: "In-Sample" },
-            { value: "outOfSample", label: "Out-of-Sample" },
-          ],
-          getMode: (t) => (t.inSample ? "inSample" : "outOfSample"),
-          emptyMessage: "No trades match these filters.",
-          rowRenderer: simpleBacktestRow,
-        });
-      } else {
-        resultsWrap.appendChild(el("p", { class: "empty-state" }, "No trades were generated over this history — see the aggregate stats above for why (likely: no candidate ever cleared confirmation/risk checks in this window)."));
-      }
+    if (combos.length > 1) {
+      resultsWrap.appendChild(
+        el("p", { class: "focus-reason" }, `Running ${combos.length} backtests, one per symbol — this takes longer and uses meaningfully more of your API quota than a single-symbol run.`)
+      );
+    }
 
-      resultsWrap.appendChild(el("div", { class: "section-title" }, "Caveats"));
-      resultsWrap.appendChild(el("ul", { class: "caveat-list" }, result.caveats.map((c) => el("li", {}, c))));
+    let done = 0;
+    runBtn.textContent = `Running… (0/${combos.length})`;
 
-      lastRun = { market, symbol, strategyIds, isDemo: !!data.isDemo, dataStatus: data.status, result };
-      const saveBtn = el("button", { class: "btn", onclick: async () => {
-        await saveBacktestRun(lastRun);
-        await renderBacktestHistory(historyContainer, state);
-        saveBtn.textContent = "Saved ✓";
-        saveBtn.disabled = true;
-      } }, "💾 Save this backtest");
-      resultsWrap.appendChild(saveBtn);
-    } catch (e) {
-      resultsWrap.appendChild(el("div", { class: "notice notice-error" }, friendlyErrorMessage(e)));
-    } finally {
+    const perCombo = await Promise.all(
+      combos.map(async ({ market, symbol }) => {
+        try {
+          const strategyIds = strategiesForMarket(market).map((s) => s.id);
+          const timeframe = market === "us_stocks" ? "15m" : "1h";
+          const data = await getMarketData({ symbol, market, timeframe, limit: 500, apiKeys: state.settings.apiKeys, forceProviderId: state.settings.dataProviderOverride?.[market] });
+          done += 1;
+          runBtn.textContent = `Running… (${done}/${combos.length})`;
+          if (!data.candles || data.candles.length < 65) return { market, symbol, error: "Not enough historical candles for this symbol/timeframe." };
+          const result = runBacktest({ candles: data.candles, strategyIds, market, symbol, riskSettings: state.settings.risk });
+          if (result.error) return { market, symbol, error: result.error };
+          return { market, symbol, isDemo: !!data.isDemo, dataStatus: data.status, result };
+        } catch (e) {
+          done += 1;
+          return { market, symbol, error: friendlyErrorMessage(e) };
+        }
+      })
+    );
+
+    const successful = perCombo.filter((r) => r.result);
+    const failed = perCombo.filter((r) => r.error);
+
+    if (!successful.length) {
+      resultsWrap.appendChild(el("div", { class: "notice notice-error" }, `No backtests completed successfully. ${failed[0]?.error || ""}`));
       runBtn.disabled = false;
       runBtn.textContent = "Run Backtest";
+      return;
     }
+
+    const allTrades = successful.flatMap((r) => r.result.trades);
+    const inSampleTrades = allTrades.filter((t) => t.inSample);
+    const outOfSampleTrades = allTrades.filter((t) => !t.inSample);
+    const anyDemo = successful.some((r) => r.isDemo);
+
+    resultsWrap.appendChild(
+      el("p", { class: "scan-context-note" }, `${successful.length} of ${combos.length} backtest(s) completed across ${new Set(successful.map((r) => r.symbol)).size} symbol(s).${failed.length ? ` ${failed.length} skipped (insufficient history or a data error).` : ""}`)
+    );
+    resultsWrap.appendChild(dataStatusBadge(anyDemo ? "DEMO" : successful[0].dataStatus));
+    resultsWrap.appendChild(el("div", { class: "section-title" }, `Combined In-Sample (${inSampleTrades.length} trades)`));
+    resultsWrap.appendChild(backtestStatsBlock(computePerformance({ trades: inSampleTrades, startingBalance })));
+    resultsWrap.appendChild(el("div", { class: "section-title" }, `Combined Out-of-Sample (${outOfSampleTrades.length} trades)`));
+    resultsWrap.appendChild(backtestStatsBlock(computePerformance({ trades: outOfSampleTrades, startingBalance })));
+
+    resultsWrap.appendChild(el("div", { class: "section-title" }, `All Trades (${allTrades.length})`));
+    if (allTrades.length) {
+      const tradeListContainer = el("div", {});
+      resultsWrap.appendChild(tradeListContainer);
+      renderTradeLogBrowser(tradeListContainer, [...allTrades].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)), {
+        modeOptions: [
+          { value: "all", label: "All Trades" },
+          { value: "inSample", label: "In-Sample" },
+          { value: "outOfSample", label: "Out-of-Sample" },
+        ],
+        getMode: (t) => (t.inSample ? "inSample" : "outOfSample"),
+        emptyMessage: "No trades match these filters.",
+        rowRenderer: simpleBacktestRow,
+      });
+    } else {
+      resultsWrap.appendChild(el("p", { class: "empty-state" }, "No trades were generated across any tested symbol."));
+    }
+
+    resultsWrap.appendChild(el("div", { class: "section-title" }, "Caveats"));
+    const combinedCaveats = [...new Set(successful.flatMap((r) => r.result.caveats))];
+    if (combos.length > 1) {
+      combinedCaveats.push(
+        "This combines independent single-symbol backtests into one view — trades from different symbols are shown together chronologically, but each symbol's history is its own independent timeline, not a real multi-symbol portfolio simulation with shared capital."
+      );
+    }
+    resultsWrap.appendChild(el("ul", { class: "caveat-list" }, combinedCaveats.map((c) => el("li", {}, c))));
+
+    lastRun = {
+      market: combos.length === 1 ? combos[0].market : "multiple",
+      symbol: combos.length === 1 ? combos[0].symbol : `${new Set(successful.map((r) => r.symbol)).size} symbols`,
+      strategyIds: [...new Set(successful.flatMap((r) => strategiesForMarket(r.market).map((s) => s.id)))],
+      isDemo: anyDemo,
+      dataStatus: successful[0].dataStatus,
+      result: {
+        totalBars: null,
+        inSample: { count: inSampleTrades.length, performance: computePerformance({ trades: inSampleTrades, startingBalance }) },
+        outOfSample: { count: outOfSampleTrades.length, performance: computePerformance({ trades: outOfSampleTrades, startingBalance }) },
+        trades: allTrades,
+      },
+    };
+    const saveBtn = el("button", { class: "btn", onclick: async () => {
+      await saveBacktestRun(lastRun);
+      await renderBacktestHistory(historyContainer, state);
+      saveBtn.textContent = "Saved ✓";
+      saveBtn.disabled = true;
+    } }, "💾 Save this backtest");
+    resultsWrap.appendChild(saveBtn);
+
+    runBtn.disabled = false;
+    runBtn.textContent = "Run Backtest";
   }
 }
 
@@ -1390,11 +1548,6 @@ export async function renderSettings(root, state) {
   root.appendChild(cloudContainer);
   await renderCloudSyncSection(cloudContainer, state);
 
-  root.appendChild(el("div", { class: "section-title" }, "Security"));
-  const securityContainer = el("div", {});
-  root.appendChild(securityContainer);
-  await renderSecuritySection(securityContainer, state);
-
   const saveBtn = el("button", { class: "btn btn-primary", onclick: () => state.persistSettings() }, "Save Settings");
   root.appendChild(saveBtn);
 }
@@ -1410,7 +1563,7 @@ async function renderCloudSyncSection(container, state) {
     const textarea = document.createElement("textarea");
     textarea.className = "input cloud-config-textarea";
     textarea.placeholder = '{\n  "apiKey": "...",\n  "authDomain": "...",\n  "projectId": "...",\n  ...\n}';
-    const error = el("p", { class: "pin-error" });
+    const error = el("p", { class: "error-text" });
     const connectBtn = el("button", { class: "btn btn-primary", onclick: async () => {
       error.textContent = "";
       const config = parseFirebaseConfigInput(textarea.value);
@@ -1475,38 +1628,6 @@ async function renderCloudSyncSection(container, state) {
   );
 }
 
-async function renderSecuritySection(container, state) {
-  container.innerHTML = "";
-  const enabled = await isPinEnabled();
-
-  if (enabled) {
-    container.appendChild(el("p", { class: "focus-reason" }, "PIN lock is ON — you'll need your 6-digit PIN each time you open the app."));
-    container.appendChild(
-      el("div", { class: "security-actions" }, [
-        el("button", { class: "btn", onclick: () => openChangePinModal(container, state) }, "Change PIN"),
-        el("button", { class: "btn btn-ghost", onclick: () => openDisablePinModal(container, state) }, "Turn Off PIN Lock"),
-      ])
-    );
-  } else {
-    container.appendChild(el("p", { class: "focus-reason" }, "PIN lock is OFF — anyone who opens this app on this device can see your trades."));
-    container.appendChild(el("button", { class: "btn btn-primary", onclick: () => openSetupPinModal(container, state) }, "Set Up PIN Lock"));
-  }
-}
-
-function pinModalInput(placeholder) {
-  const input = document.createElement("input");
-  input.type = "password";
-  input.inputMode = "numeric";
-  input.maxLength = 6;
-  input.className = "input pin-modal-input";
-  input.placeholder = placeholder;
-  input.autocomplete = "off";
-  input.addEventListener("input", () => {
-    input.value = input.value.replace(/\D/g, "").slice(0, 6);
-  });
-  return input;
-}
-
 function openResetTradeDataModal(state) {
   const modal = buildModal("Reset Trade Data");
   modal.body.appendChild(
@@ -1516,7 +1637,7 @@ function openResetTradeDataModal(state) {
   confirmInput.type = "text";
   confirmInput.className = "input";
   confirmInput.placeholder = 'Type RESET to confirm';
-  const error = el("p", { class: "pin-error" });
+  const error = el("p", { class: "error-text" });
   const btn = el("button", { class: "btn btn-danger", onclick: async () => {
     if (confirmInput.value.trim().toUpperCase() !== "RESET") {
       error.textContent = 'Type RESET (all caps) to confirm.';
@@ -1536,58 +1657,6 @@ function openResetTradeDataModal(state) {
   modal.body.appendChild(confirmInput);
   modal.body.appendChild(error);
   modal.body.appendChild(btn);
-  document.body.appendChild(modal.overlay);
-}
-
-function openChangePinModal(securityContainer, state) {
-  const modal = buildModal("Change PIN");
-  const current = pinModalInput("Current PIN");
-  const next = pinModalInput("New PIN");
-  const confirm = pinModalInput("Confirm New PIN");
-  const error = el("p", { class: "pin-error" });
-  const btn = el("button", { class: "btn btn-primary", onclick: async () => {
-    error.textContent = "";
-    if (!(await verifyPin(current.value))) { error.textContent = "Current PIN is incorrect."; return; }
-    if (!/^\d{6}$/.test(next.value)) { error.textContent = "New PIN must be exactly 6 digits."; return; }
-    if (next.value !== confirm.value) { error.textContent = "New PINs don't match."; return; }
-    await setupPin(next.value);
-    modal.overlay.remove();
-    await renderSecuritySection(securityContainer, state);
-  } }, "Update PIN");
-  [current, next, confirm, error, btn].forEach((n) => modal.body.appendChild(n));
-  document.body.appendChild(modal.overlay);
-}
-
-function openDisablePinModal(securityContainer, state) {
-  const modal = buildModal("Turn Off PIN Lock");
-  modal.body.appendChild(el("p", { class: "focus-reason" }, "Enter your current PIN to confirm. You can turn it back on anytime from here."));
-  const current = pinModalInput("Current PIN");
-  const error = el("p", { class: "pin-error" });
-  const btn = el("button", { class: "btn btn-primary", onclick: async () => {
-    error.textContent = "";
-    if (!(await verifyPin(current.value))) { error.textContent = "Incorrect PIN."; return; }
-    await disablePin();
-    modal.overlay.remove();
-    await renderSecuritySection(securityContainer, state);
-  } }, "Turn Off");
-  [current, error, btn].forEach((n) => modal.body.appendChild(n));
-  document.body.appendChild(modal.overlay);
-}
-
-function openSetupPinModal(securityContainer, state) {
-  const modal = buildModal("Set Up PIN Lock");
-  const next = pinModalInput("New PIN");
-  const confirm = pinModalInput("Confirm PIN");
-  const error = el("p", { class: "pin-error" });
-  const btn = el("button", { class: "btn btn-primary", onclick: async () => {
-    error.textContent = "";
-    if (!/^\d{6}$/.test(next.value)) { error.textContent = "PIN must be exactly 6 digits."; return; }
-    if (next.value !== confirm.value) { error.textContent = "PINs don't match."; return; }
-    await setupPin(next.value);
-    modal.overlay.remove();
-    await renderSecuritySection(securityContainer, state);
-  } }, "Turn On PIN Lock");
-  [next, confirm, error, btn].forEach((n) => modal.body.appendChild(n));
   document.body.appendChild(modal.overlay);
 }
 

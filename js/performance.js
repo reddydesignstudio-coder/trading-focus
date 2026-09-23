@@ -162,3 +162,22 @@ export function formatHoldingTime(ms) {
   const rem = mins % 60;
   return `${hours}h ${rem}m`;
 }
+
+/**
+ * Chronological account ledger: opening balance, then one entry per
+ * completed trade (in the order it closed) with the running balance
+ * right after that trade. Only WIN/LOSS/AMBIGUOUS trades produce a row —
+ * OPEN trades haven't affected the balance yet, consistent with how the
+ * rest of the app treats unrealized P&L. Trades are NOT re-sorted here —
+ * the caller is expected to pass them already in chronological order
+ * (oldest first), since "chronological" depends on which timestamp field
+ * makes sense for the caller's trade shape.
+ */
+export function buildAccountLedger(orderedCompletedTrades, startingBalance) {
+  let running = startingBalance;
+  const entries = orderedCompletedTrades.map((t) => {
+    running += t.pnl || 0;
+    return { trade: t, runningBalance: round(running, 2) };
+  });
+  return { openingBalance: startingBalance, entries, endingBalance: round(running, 2) };
+}

@@ -3,7 +3,6 @@ import { loadSettings, saveSettings, effectiveTimeZone } from "./settings.js";
 import { renderHome, renderScan, renderOthers, renderSettings } from "./ui/views.js";
 import { el } from "./ui/components.js";
 import { checkAndResolveOpenTrades } from "./paperTrading.js";
-import { requirePinUnlock } from "./pinLock.js";
 import * as db from "./db.js";
 import { registerCloudSyncHooks, initFromSavedConfig, onAuthChange, onRemoteChange } from "./cloudSync.js";
 
@@ -110,12 +109,6 @@ async function setTab(tabId) {
 }
 
 async function boot() {
-  // PIN lock gates everything else — nothing renders until this resolves.
-  // Uses its own overlay appended to <body>, entirely separate from #app's
-  // header/content/nav structure, so nothing here needs those elements to
-  // exist yet (and nothing here destroys them).
-  await requirePinUnlock();
-
   state.settings = await loadSettings();
 
   // Cloud sync: wires db.js's write path to also mirror to Firestore, IF a

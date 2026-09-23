@@ -2,12 +2,22 @@
 //
 // Caches ONLY the static app shell (HTML/CSS/JS/icons) so the app is
 // installable and opens offline. Market-data requests (Binance,
-// Twelve Data) are explicitly bypassed — never cached here — so a
-// stale service-worker cache can never masquerade as fresh price
-// data. Freshness/staleness of market data is handled entirely by
-// js/dataProviders/index.js at the application layer.
+// Twelve Data, Finnhub, FMP, Alpha Vantage) are explicitly bypassed —
+// never cached here — so a stale service-worker cache can never
+// masquerade as fresh price data. Freshness/staleness of market data
+// is handled entirely by js/dataProviders/index.js at the application
+// layer.
+//
+// NETWORK-FIRST for the app's own JS/CSS/HTML (changed from
+// cache-first): this app ships real fixes frequently, and cache-first
+// meant a browser that had already cached an old version could keep
+// serving that old version indefinitely — updates would only apply in
+// the background, one load behind, and a same-named cache never gets
+// cleared of stale entries on its own. Network-first means you always
+// get whatever's actually deployed while you have a connection; the
+// cache is only a fallback for when you're genuinely offline.
 
-const CACHE_NAME = "trading-focus-shell-v1";
+const CACHE_NAME = "trading-focus-shell-v2"; // bumped so the old (stale) v1 cache is deleted on next activate
 const SHELL_ASSETS = [
   "./",
   "./index.html",
@@ -31,7 +41,7 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-const NEVER_CACHE_HOSTS = ["api.binance.com", "api.twelvedata.com"];
+const NEVER_CACHE_HOSTS = ["api.binance.com", "api.twelvedata.com", "finnhub.io", "financialmodelingprep.com", "www.alphavantage.co"];
 
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
@@ -47,17 +57,14 @@ self.addEventListener("fetch", (event) => {
   }
 
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const networkFetch = fetch(event.request)
-        .then((res) => {
-          if (res.ok) {
-            const clone = res.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-          }
-          return res;
-        })
-        .catch(() => cached);
-      return cached || networkFetch;
-    })
+    fetch(event.request)
+      .then((res) => {
+        if (res.ok) {
+          const clone = res.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+        }
+        return res;
+      })
+      .catch(() => caches.match(event.request)) // offline fallback only — never preferred over a live network response
   );
 });

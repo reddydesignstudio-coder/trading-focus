@@ -3,8 +3,8 @@
 Run with: `npm test` (`node --test tests/*.test.js`), Node v22.
 
 ```
-tests 118
-pass 118
+tests 114
+pass 114
 fail 0
 cancelled 0
 skipped 0
@@ -27,7 +27,6 @@ skipped 0
 | `dataProviderRotation.test.js` | Automatic fallback from a rate-limited primary Twelve Data key to the backup key, then to demo data if both are limited |
 | `newStrategies.test.js` | Trigger-condition correctness for Bollinger Mean Reversion, Gap and Go, and EMA 9/20 Momentum Cross |
 | `plainEnglish.test.js` | Every registered strategy (all 19) has a real, jargon-free, direction-aware plain-English explanation — not the generic fallback |
-| `pinLock.test.js` | PIN setup stores a hash (never the plain PIN), correct/incorrect verification, overwriting an existing PIN, enable/disable |
 | `cloudSyncHooks.test.js` | db.js's cloud-sync hook mechanism: `afterPut`/`afterDelete` fire correctly, and `skipCloudSync` suppresses them — this is the loop-prevention logic that stops an incoming sync write from re-triggering an outgoing one |
 | `cloudConfigParser.test.js` | The lenient Firebase-config parser handles the exact JS-object-literal format Firebase's console shows (unquoted keys, `const` wrapper, trailing comma) via pure string/JSON normalization — never executes the pasted text as code |
 | `providerChain.test.js` | The Stocks/Forex multi-provider fallback chain: falls through a premium-gated Finnhub key to Twelve Data, never calls a provider with no configured key, falls all the way to demo when everything fails |
