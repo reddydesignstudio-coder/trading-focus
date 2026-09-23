@@ -14,7 +14,7 @@ export function defaultSettings() {
     // twelvedata: primary key. twelvedataBackup: optional second key — if the
     // primary comes back rate-limited (429), the data layer automatically
     // retries with the backup before falling back to demo data.
-    apiKeys: { twelvedata: "", twelvedataBackup: "" },
+    apiKeys: { twelvedata: "", twelvedataBackup: "", finnhub: "", fmp: "", alphavantage: "" },
     dataProviderOverride: {}, // e.g. { us_stocks: "demo" } to force demo mode per market
     testModeTradesPerDay: 2,
     watchlists: null, // null = use DEFAULT_WATCHLISTS

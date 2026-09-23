@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { installFakeIndexedDB } from "./helpers/fakeIndexedDB.js";
-import { _resetForTests, put, getAll } from "../js/db.js";
+import { _resetForTests, put, getAll, get } from "../js/db.js";
 import { checkAndResolveOpenTrades } from "../js/paperTrading.js";
 
 function fakeState() {
@@ -169,4 +169,50 @@ test("a genuinely still-open trade (neither TP nor SL touched) is left OPEN, not
   } finally {
     restoreFetch();
   }
+});
+
+test("resetTradeData clears trades and signals but leaves settings (watchlists/symbols) untouched", async () => {
+  installFakeIndexedDB();
+  _resetForTests();
+  const { resetTradeData } = await import("../js/paperTrading.js");
+
+  await put("trades", { id: "t1", symbol: "AAPL", status: "WIN" });
+  await put("trades", { id: "t2", symbol: "MSFT", status: "OPEN" });
+  await put("signals", { id: "s1", symbol: "AAPL", outcome: "qualifying" });
+  await put("settings", { key: "app_settings", watchlists: { us_stocks: ["AAPL", "MSFT", "NVDA"] } });
+
+  const result = await resetTradeData();
+  assert.equal(result.tradesCleared, 2);
+  assert.equal(result.signalsCleared, 1);
+
+  const remainingTrades = await getAll("trades");
+  const remainingSignals = await getAll("signals");
+  const settings = await get("settings", "app_settings");
+
+  assert.equal(remainingTrades.length, 0);
+  assert.equal(remainingSignals.length, 0);
+  assert.deepEqual(settings.watchlists.us_stocks, ["AAPL", "MSFT", "NVDA"]); // symbols survive the reset
+});
+
+test("resetTradeData deletes trades one-by-one (via remove, not clearStore) so each deletion can mirror to cloud sync", async () => {
+  installFakeIndexedDB();
+  _resetForTests();
+  const { resetTradeData } = await import("../js/paperTrading.js");
+  const { setCloudSyncHooks } = await import("../js/db.js");
+
+  const deletedIds = [];
+  setCloudSyncHooks({ afterPut: () => {}, afterDelete: (store, key) => deletedIds.push([store, key]) });
+
+  await put("trades", { id: "t1" }, { skipCloudSync: true });
+  await put("trades", { id: "t2" }, { skipCloudSync: true });
+  await put("signals", { id: "s1" }, { skipCloudSync: true });
+
+  await resetTradeData();
+
+  assert.equal(deletedIds.length, 3);
+  assert.ok(deletedIds.some(([store, key]) => store === "trades" && key === "t1"));
+  assert.ok(deletedIds.some(([store, key]) => store === "trades" && key === "t2"));
+  assert.ok(deletedIds.some(([store, key]) => store === "signals" && key === "s1"));
+
+  setCloudSyncHooks(null);
 });

@@ -3,15 +3,16 @@ import { el, signalCard, statCard, funnelBar, tradeRow, dataStatusBadge } from "
 import { computeMarketFocus, assessTradingWindow } from "../marketFocus.js";
 import { formatClock, formatCountdownHMS, computeKeySessionCountdowns } from "../timezone.js";
 import { scanMarket, DEFAULT_WATCHLISTS } from "../scanner.js";
-import { getLiveModeStatus, executeTrade, markSignalMissed, saveSignal, TEST_MODE_OPTIONS } from "../paperTrading.js";
+import { getLiveModeStatus, executeTrade, markSignalMissed, saveSignal, TEST_MODE_OPTIONS, checkAndResolveOpenTrades, resetTradeData } from "../paperTrading.js";
 import { recalculateTrade } from "../risk.js";
 import { getDailySummary } from "../dailySummary.js";
 import { getAll, put, remove } from "../db.js";
-import { computePerformance } from "../performance.js";
+import { computePerformance, formatHoldingTime } from "../performance.js";
 import { getStrategyLab } from "../strategyLab.js";
 import { runBacktest } from "../backtest.js";
 import { getMarketData } from "../dataProviders/index.js";
 import { atr, estimatePaceMs } from "../indicators.js";
+import { detectPatternsAt } from "../candlestick.js";
 import { strategiesForMarket, ALL_STRATEGIES } from "../strategies/index.js";
 import { exportJSON, exportTradesCSV, importFromJSON, downloadBlob } from "../exportImport.js";
 import { saveSettings } from "../settings.js";
@@ -26,6 +27,7 @@ import {
   signOutUser,
   pullAllOnce,
   pushAllOnce,
+  parseFirebaseConfigInput,
 } from "../cloudSync.js";
 import { fmtUSD, fmtPct, todayKey, uid } from "../utils.js";
 
@@ -628,21 +630,47 @@ export async function renderJournal(root, state) {
     emptyMessage: "No trades match these filters.",
   });
 
-  const openTrades = trades.filter((t) => t.status === "OPEN");
-  if (!openTrades.length) return;
+  if (!trades.some((t) => t.status === "OPEN")) return;
 
   // Fetch current price + volatility (ATR) for every OPEN trade's symbol (deduped by
   // symbol+market), patching trade objects in place (by id, never by DOM index) so
   // re-rendering is always safe regardless of the browser's filter/pagination state.
   // Refreshed periodically (not just once) so the pace estimate actually responds to
   // current market conditions rather than going stale the moment you open the page.
+  //
+  // IMPORTANT: resolution is checked HERE FIRST, every cycle — not just on tab
+  // navigation elsewhere in the app. Previously the Journal's own live-price
+  // display could show a price past TP/SL while the trade's actual status field
+  // only got re-checked when you happened to switch tabs, so a trade could sit
+  // there looking "OPEN" with a current price well past its target. Now the
+  // same refresh that updates the displayed price also resolves the trade
+  // first, using that same fresh data, so the two can never disagree.
   async function refreshLiveData() {
+    const resolution = await checkAndResolveOpenTrades(state);
+    if (resolution.resolved > 0) {
+      // Pull the updated statuses back into our in-memory trade objects (by id)
+      // so the existing DOM patch-by-id flow below stays correct.
+      const freshTrades = await getAll("trades");
+      const freshById = new Map(freshTrades.map((t) => [t.id, t]));
+      trades.forEach((t, i) => {
+        const fresh = freshById.get(t.id);
+        if (fresh && fresh.status !== t.status) trades[i] = fresh;
+      });
+    }
+
+    const openTrades = trades.filter((t) => t.status === "OPEN");
+    if (!openTrades.length) {
+      browser.refresh();
+      return;
+    }
+
     const uniqueKeys = [...new Set(openTrades.map((t) => `${t.market}:${t.symbol}`))];
     await Promise.all(
       uniqueKeys.map(async (key) => {
         const [market, symbol] = key.split(":");
         let price = null;
         let atrVal = null;
+        let lastPatternLabel = null;
         const timeframe = market === "us_stocks" ? "15m" : "1h";
         const timeframeMs = { "15m": 900000, "1h": 3600000 }[timeframe];
         try {
@@ -653,6 +681,14 @@ export async function renderJournal(root, state) {
           if (candles && candles.length >= 15) {
             const atrSeries = atr(candles, 14);
             atrVal = atrSeries[atrSeries.length - 1];
+          }
+          if (candles && candles.length >= 4) {
+            // Factual, backward-looking only — what pattern the most recent completed
+            // candle actually formed. Deliberately NOT a prediction of what forms next;
+            // no honest method exists to predict a future candlestick shape, so this
+            // app doesn't pretend to. See the note rendered alongside it in the UI.
+            const patterns = detectPatternsAt(candles, candles.length - 1);
+            lastPatternLabel = patterns.length ? patterns.map((p) => p.name.replace(/([A-Z])/g, " $1").trim()).join(", ") : null;
           }
         } catch {
           price = null;
@@ -674,6 +710,7 @@ export async function renderJournal(root, state) {
             distanceToSL,
             paceMs,
             paceTargetAt: paceMs !== null ? new Date(now + paceMs) : null,
+            lastPattern: lastPatternLabel,
           };
         });
       })
@@ -841,21 +878,18 @@ function equityCurveSVG(curve) {
 export async function renderBacktest(root, state) {
   root.innerHTML = "";
   root.appendChild(el("div", { class: "section-title" }, "Backtest"));
+  root.appendChild(el("p", { class: "focus-reason" }, "Tests every strategy for the selected market against that symbol's real history — no manual strategy picking needed."));
 
   const marketSelect = el("select", { class: "input" }, ["us_stocks", "forex", "crypto"].map((m) => el("option", { value: m }, labelForMarket(m))));
-  const symbolInput = el("input", { class: "input", value: "BTCUSDT", placeholder: "Symbol" });
-  const strategyChecks = el("div", { class: "strategy-checks" });
+  const symbolSelect = el("select", { class: "input" });
 
-  function refreshStrategies() {
-    strategyChecks.innerHTML = "";
-    strategiesForMarket(marketSelect.value).forEach((s) => {
-      const id = `bt-${s.id}`;
-      const label = el("label", { class: "checkbox-row" }, [el("input", { type: "checkbox", id, value: s.id, checked: "checked" }), ` ${s.name}`]);
-      strategyChecks.appendChild(label);
-    });
+  function refreshSymbols() {
+    symbolSelect.innerHTML = "";
+    const symbols = state.settings.watchlists?.[marketSelect.value] || DEFAULT_WATCHLISTS[marketSelect.value];
+    symbols.forEach((sym) => symbolSelect.appendChild(el("option", { value: sym }, sym)));
   }
-  marketSelect.addEventListener("change", refreshStrategies);
-  refreshStrategies();
+  marketSelect.addEventListener("change", refreshSymbols);
+  refreshSymbols();
 
   const runBtn = el("button", { class: "btn btn-primary", onclick: runIt }, "Run Backtest");
   const resultsWrap = el("div", { class: "backtest-results" });
@@ -863,9 +897,8 @@ export async function renderBacktest(root, state) {
   root.appendChild(el("label", { class: "field-label" }, "Market"));
   root.appendChild(marketSelect);
   root.appendChild(el("label", { class: "field-label" }, "Symbol"));
-  root.appendChild(symbolInput);
-  root.appendChild(el("label", { class: "field-label" }, "Strategies"));
-  root.appendChild(strategyChecks);
+  root.appendChild(symbolSelect);
+  root.appendChild(el("p", { class: "focus-reason" }, "Add or remove symbols in Settings → Watchlists — this dropdown always matches your current watchlist for the selected market."));
   root.appendChild(runBtn);
   root.appendChild(resultsWrap);
 
@@ -883,8 +916,8 @@ export async function renderBacktest(root, state) {
     runBtn.textContent = "Running…";
     try {
       const market = marketSelect.value;
-      const symbol = symbolInput.value.trim().toUpperCase();
-      const strategyIds = [...strategyChecks.querySelectorAll("input:checked")].map((i) => i.value);
+      const symbol = symbolSelect.value;
+      const strategyIds = strategiesForMarket(market).map((s) => s.id); // always test every strategy for this market
       const timeframe = market === "us_stocks" ? "15m" : "1h";
       const data = await getMarketData({ symbol, market, timeframe, limit: 500, apiKeys: state.settings.apiKeys, forceProviderId: state.settings.dataProviderOverride?.[market] });
       if (!data.candles || data.candles.length < 65) {
@@ -914,6 +947,7 @@ export async function renderBacktest(root, state) {
           ],
           getMode: (t) => (t.inSample ? "inSample" : "outOfSample"),
           emptyMessage: "No trades match these filters.",
+          rowRenderer: simpleBacktestRow,
         });
       } else {
         resultsWrap.appendChild(el("p", { class: "empty-state" }, "No trades were generated over this history — see the aggregate stats above for why (likely: no candidate ever cleared confirmation/risk checks in this window)."));
@@ -1002,6 +1036,7 @@ async function renderBacktestHistory(container, state) {
           { value: "outOfSample", label: "Out-of-Sample" },
         ],
         getMode: (t) => (t.inSample ? "inSample" : "outOfSample"),
+        rowRenderer: simpleBacktestRow,
       });
     } }, "View Trades");
     const actionsRow = el("div", { class: "backtest-history-actions" }, [
@@ -1015,6 +1050,39 @@ async function renderBacktestHistory(container, state) {
     card.appendChild(tradeListContainer);
     container.appendChild(card);
   });
+}
+
+/**
+ * The simplified, one-line-ish backtest result row: Symbol, Entry, Time
+ * Taken, Strategy Name, Confidence Score, Amount, Win/Loss — deliberately
+ * lighter than the full Journal trade card, since a backtest run can have
+ * many more rows than a real trade history and scanning them quickly
+ * matters more here than seeing every field.
+ */
+function simpleBacktestRow(trade) {
+  const statusClass = { WIN: "status-win", LOSS: "status-loss", AMBIGUOUS: "status-ambiguous" }[trade.status] || "";
+  const statusLabel = { WIN: "Win", LOSS: "Loss", AMBIGUOUS: "Ambiguous" }[trade.status] || trade.status;
+  const holdingTime = trade.resolvedAt && trade.createdAt ? formatHoldingTime(new Date(trade.resolvedAt) - new Date(trade.createdAt)) : "—";
+  return el("div", { class: `simple-bt-row ${statusClass}`, "data-trade-id": trade.id }, [
+    el("div", { class: "simple-bt-row-top" }, [
+      el("span", { class: "ticker" }, trade.symbol),
+      el("span", { class: `dir-pill dir-${trade.direction}` }, trade.direction === "long" ? "Long" : "Short"),
+      el("span", { class: `status-pill ${statusClass}` }, statusLabel),
+    ]),
+    el("div", { class: "simple-bt-row-grid" }, [
+      el("span", {}, [el("strong", {}, "Entry: "), fmtPrice(trade.entryPrice)]),
+      el("span", {}, [el("strong", {}, "Time Taken: "), holdingTime]),
+      el("span", {}, [el("strong", {}, "Strategy: "), trade.strategyName]),
+      el("span", {}, [el("strong", {}, "Confidence: "), trade.confidence ? `${trade.confidence.score}/100` : "—"]),
+      el("span", {}, [el("strong", {}, "Amount: "), trade.pnl !== null && trade.pnl !== undefined ? fmtUSD(trade.pnl) : "—"]),
+      el("span", {}, [el("strong", {}, "Result: "), statusLabel]),
+    ]),
+  ]);
+}
+
+function fmtPrice(v) {
+  if (v === null || v === undefined) return "—";
+  return v >= 100 ? v.toFixed(2) : v.toFixed(v >= 1 ? 4 : 6);
 }
 
 function backtestStatsBlock(perf) {
@@ -1140,13 +1208,26 @@ export async function renderSettings(root, state) {
   );
 
   root.appendChild(el("div", { class: "section-title" }, "Data Providers"));
-  root.appendChild(el("p", { class: "focus-reason" }, "Crypto uses Binance's free public API (no key). US Stocks/Forex use Twelve Data — enter your own free API key below (never stored in source code, only in your browser's local database)."));
+  root.appendChild(
+    el("p", { class: "focus-reason" }, "Crypto uses Binance's free public API (no key) and is genuinely real-time. For US Stocks/Forex, add as many of these free keys as you have — the app tries them in order (most generous free tier first) and automatically falls through to the next one if a key is rate-limited, so you hit demo mode far less often. Important: every one of these is DELAYED on its free tier, including new ones — none of them adds genuine real-time data; adding more just adds redundancy.")
+  );
+
+  root.appendChild(el("div", { class: "provider-subheading" }, "Finnhub (tried first — 60 requests/min free)"));
+  root.appendChild(textField("Finnhub API Key", s.apiKeys.finnhub, (v) => (s.apiKeys.finnhub = v)));
+  root.appendChild(el("a", { href: "https://finnhub.io/register", target: "_blank", class: "link" }, "Get a free Finnhub API key →"));
+
+  root.appendChild(el("div", { class: "provider-subheading" }, "Twelve Data (~8 requests/min free)"));
   root.appendChild(textField("Twelve Data API Key (Primary)", s.apiKeys.twelvedata, (v) => (s.apiKeys.twelvedata = v)));
   root.appendChild(textField("Twelve Data API Key (Backup, optional)", s.apiKeys.twelvedataBackup, (v) => (s.apiKeys.twelvedataBackup = v)));
-  root.appendChild(el("p", { class: "focus-reason" }, "If you add a second key, the app automatically switches to it whenever the primary key hits its rate limit — no separate step needed."));
-  root.appendChild(
-    el("a", { href: "https://twelvedata.com/pricing", target: "_blank", class: "link" }, "Get a free Twelve Data API key →")
-  );
+  root.appendChild(el("a", { href: "https://twelvedata.com/pricing", target: "_blank", class: "link" }, "Get a free Twelve Data API key →"));
+
+  root.appendChild(el("div", { class: "provider-subheading" }, "Financial Modeling Prep"));
+  root.appendChild(textField("FMP API Key", s.apiKeys.fmp, (v) => (s.apiKeys.fmp = v)));
+  root.appendChild(el("a", { href: "https://site.financialmodelingprep.com/developer/docs/pricing", target: "_blank", class: "link" }, "Get a free FMP API key →"));
+
+  root.appendChild(el("div", { class: "provider-subheading" }, "Alpha Vantage (tried last — free tier is only 25 requests/DAY)"));
+  root.appendChild(textField("Alpha Vantage API Key", s.apiKeys.alphavantage, (v) => (s.apiKeys.alphavantage = v)));
+  root.appendChild(el("a", { href: "https://www.alphavantage.co/support/#api-key", target: "_blank", class: "link" }, "Get a free Alpha Vantage API key →"));
 
   root.appendChild(el("div", { class: "section-title" }, "Watchlists"));
   root.appendChild(el("p", { class: "focus-reason" }, "Add or remove the exact symbols Check for Trade scans for each market. Changes save immediately."));
@@ -1175,6 +1256,12 @@ export async function renderSettings(root, state) {
   root.appendChild(el("label", { class: "field-label" }, "Import JSON backup"));
   root.appendChild(importInput);
 
+  root.appendChild(el("div", { class: "section-title" }, "Reset Trade Data" ));
+  root.appendChild(
+    el("p", { class: "focus-reason" }, "Erases every paper trade — open and closed — plus signal history. Your watchlists/symbols, risk settings, API keys, and saved backtests are NOT affected. Export a backup above first if you want to keep a copy.")
+  );
+  root.appendChild(el("button", { class: "btn btn-danger", onclick: () => openResetTradeDataModal() }, "Reset Trade Data…"));
+
   root.appendChild(el("div", { class: "section-title" }, "Cloud Sync (Firebase)"));
   const cloudContainer = el("div", {});
   root.appendChild(cloudContainer);
@@ -1195,7 +1282,7 @@ async function renderCloudSyncSection(container, state) {
 
   if (!savedConfig) {
     container.appendChild(
-      el("p", { class: "focus-reason" }, "Not connected. Paste your Firebase project config below to sync trades, journal, and backtests across your iPhone and desktop. See docs/FIREBASE_SETUP.md for step-by-step setup — this is the one piece I can't fully test for you, since it needs your own live Firebase project.")
+      el("p", { class: "focus-reason" }, "Not connected. Go to your Firebase project → Project Settings → Your apps, and copy the whole \"firebaseConfig\" block shown there — paste it below exactly as shown, no editing needed (this app accepts it whether or not it still has \"const firebaseConfig = \" and a semicolon around it). See docs/FIREBASE_SETUP.md for full setup steps — this is the one piece I can't fully test for you, since it needs your own live Firebase project.")
     );
     const textarea = document.createElement("textarea");
     textarea.className = "input cloud-config-textarea";
@@ -1203,11 +1290,9 @@ async function renderCloudSyncSection(container, state) {
     const error = el("p", { class: "pin-error" });
     const connectBtn = el("button", { class: "btn btn-primary", onclick: async () => {
       error.textContent = "";
-      let config;
-      try {
-        config = JSON.parse(textarea.value);
-      } catch {
-        error.textContent = "That doesn't look like valid JSON — paste the exact config object from your Firebase project settings.";
+      const config = parseFirebaseConfigInput(textarea.value);
+      if (!config) {
+        error.textContent = "Couldn't read that as a config object. Paste the whole block Firebase showed you (the part between the { and }), including or excluding \"const firebaseConfig = \" — either works.";
         return;
       }
       connectBtn.disabled = true;
@@ -1297,6 +1382,34 @@ function pinModalInput(placeholder) {
     input.value = input.value.replace(/\D/g, "").slice(0, 6);
   });
   return input;
+}
+
+function openResetTradeDataModal() {
+  const modal = buildModal("Reset Trade Data");
+  modal.body.appendChild(
+    el("p", { class: "focus-reason" }, "This permanently erases every open and closed paper trade and all signal history on this device (and from the cloud, if Cloud Sync is on). Your watchlists, risk settings, API keys, and saved backtests are kept. This can't be undone — export a backup first if you're not sure.")
+  );
+  const confirmInput = document.createElement("input");
+  confirmInput.type = "text";
+  confirmInput.className = "input";
+  confirmInput.placeholder = 'Type RESET to confirm';
+  const error = el("p", { class: "pin-error" });
+  const btn = el("button", { class: "btn btn-danger", onclick: async () => {
+    if (confirmInput.value.trim().toUpperCase() !== "RESET") {
+      error.textContent = 'Type RESET (all caps) to confirm.';
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "Resetting…";
+    const result = await resetTradeData();
+    modal.overlay.remove();
+    alert(`Cleared ${result.tradesCleared} trade(s) and ${result.signalsCleared} signal(s). Your symbols and settings were not touched.`);
+    window.location.reload();
+  } }, "Erase All Trade Data");
+  modal.body.appendChild(confirmInput);
+  modal.body.appendChild(error);
+  modal.body.appendChild(btn);
+  document.body.appendChild(modal.overlay);
 }
 
 function openChangePinModal(securityContainer, state) {

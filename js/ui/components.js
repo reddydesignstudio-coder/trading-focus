@@ -164,6 +164,7 @@ export function tradeRow(trade, live = null) {
         kv("If SL hits", `-${fmtUSD(trade.dollarRisk)}`),
         kv("Distance to TP", live && live.distanceToTP !== null ? fmtPrice(live.distanceToTP) : "—"),
         kv("Distance to SL", live && live.distanceToSL !== null ? fmtPrice(live.distanceToSL) : "—"),
+        kv("Last Candle Pattern", live ? live.lastPattern || "No clear pattern" : "…"),
       ])
     );
     if (live && live.paceTargetAt) {
@@ -179,6 +180,7 @@ export function tradeRow(trade, live = null) {
 
   rows.push(
     el("div", { class: "trade-row-grid" }, [
+      kv("Opened", new Date(trade.createdAt).toLocaleString()),
       kv("Entry", fmtPrice(trade.entryPrice)),
       kv("SL", fmtPrice(trade.stopLoss)),
       kv("TP", fmtPrice(trade.takeProfit)),
@@ -186,7 +188,14 @@ export function tradeRow(trade, live = null) {
       kv("P&L", trade.pnl !== null ? fmtUSD(trade.pnl) : "—"),
       kv("R", trade.rMultiple !== null && trade.rMultiple !== undefined ? `${trade.rMultiple.toFixed(2)}R` : "—"),
       kv("Confidence", trade.confidence ? `${trade.confidence.score}/100` : "—"),
-      kv("Holding", trade.resolvedAt ? formatHoldingTime(new Date(trade.resolvedAt) - new Date(trade.createdAt)) : "—"),
+      kv(
+        "Holding",
+        trade.resolvedAt
+          ? formatHoldingTime(new Date(trade.resolvedAt) - new Date(trade.createdAt))
+          : trade.status === "OPEN"
+          ? `${formatHoldingTime(Date.now() - new Date(trade.createdAt))} so far`
+          : "—"
+      ),
     ])
   );
 

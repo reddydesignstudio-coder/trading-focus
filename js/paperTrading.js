@@ -20,7 +20,7 @@
 // in a completely separate `mode: "test"` partition so statistics
 // never mix with Live Mode.
 
-import { put, get, getAllByIndex } from "./db.js";
+import { put, get, getAll, getAllByIndex, remove } from "./db.js";
 import { uid, todayKey } from "./utils.js";
 import { DEFAULT_TIMEZONE } from "./timezone.js";
 import { getMarketData } from "./dataProviders/index.js";
@@ -199,4 +199,25 @@ export async function saveSignal(signal, timeZone = DEFAULT_TIMEZONE) {
   const record = { ...signal, dateKey: todayKey(new Date(), timeZone), outcome: signal.rejected ? "rejected" : "qualifying" };
   await put("signals", record);
   return record;
+}
+
+/**
+ * Erases TRADE DATA ONLY — every open and closed paper trade, plus the
+ * signals/funnel history behind them. Deliberately does NOT touch:
+ * settings (risk config, watchlists/symbols, API keys), backtests (a
+ * separate kind of historical test data, not live paper trades), the PIN,
+ * or the cloud sync config itself.
+ *
+ * Deletes records ONE AT A TIME via remove() rather than a bulk clearStore()
+ * — this matters specifically because of Cloud Sync: remove() goes through
+ * db.js's afterDelete hook, which mirrors each deletion out to Firestore
+ * too. A bulk clearStore() would only wipe the LOCAL copy, and the very
+ * next real-time sync from another signed-in device would silently
+ * re-download everything right back, undoing the reset.
+ */
+export async function resetTradeData() {
+  const [trades, signals] = await Promise.all([getAll("trades"), getAll("signals")]);
+  await Promise.all(trades.map((t) => remove("trades", t.id)));
+  await Promise.all(signals.map((s) => remove("signals", s.id)));
+  return { tradesCleared: trades.length, signalsCleared: signals.length };
 }

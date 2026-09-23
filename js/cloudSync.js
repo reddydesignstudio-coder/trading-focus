@@ -53,6 +53,53 @@ async function loadFirebase(config) {
   return { auth, db };
 }
 
+/**
+ * Firebase's console shows the config as a JavaScript object literal —
+ * unquoted keys, often with a "const firebaseConfig = " prefix and a
+ * trailing ";" — not strict JSON. Rather than making the person hand-edit
+ * what they copied, this accepts it as given: tries strict JSON first,
+ * then normalizes the common JS-literal quirks (unquoted keys, a trailing
+ * comma, the const/export wrapper) into strict JSON and parses that.
+ * Deliberately never executes the pasted text as code (no eval, no
+ * `new Function`) — this is pure string/regex normalization plus
+ * `JSON.parse`, so a malformed or even hostile paste can only ever fail
+ * to parse, never run. Returns null if it genuinely can't make sense of
+ * the input, or if the result is missing the fields a real config needs.
+ */
+export function parseFirebaseConfigInput(raw) {
+  if (!raw || !raw.trim()) return null;
+  const isUsable = (obj) => obj && typeof obj === "object" && !Array.isArray(obj) && obj.apiKey && obj.projectId;
+
+  let text = raw.trim();
+  try {
+    const parsed = JSON.parse(text);
+    if (isUsable(parsed)) return parsed;
+  } catch {
+    /* fall through to the JS-literal normalization below */
+  }
+
+  text = text.replace(/^\s*(export\s+)?(const|let|var)\s+\w+\s*=\s*/, "");
+  text = text.replace(/;\s*$/, "");
+
+  const firstBrace = text.indexOf("{");
+  const lastBrace = text.lastIndexOf("}");
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) return null;
+  text = text.slice(firstBrace, lastBrace + 1);
+
+  // Quote unquoted keys (`apiKey:` -> `"apiKey":`) — only matches a key position
+  // (right after `{` or `,`), so it never touches anything inside a string value.
+  text = text.replace(/([{,]\s*)([A-Za-z_$][A-Za-z0-9_$]*)(\s*:)/g, '$1"$2"$3');
+  // Drop a trailing comma before a closing brace/bracket (valid JS, invalid JSON).
+  text = text.replace(/,(\s*[}\]])/g, "$1");
+
+  try {
+    const parsed = JSON.parse(text);
+    return isUsable(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function getSavedConfig() {
   const record = await get("settings", CONFIG_KEY);
   return record?.config || null;

@@ -48,7 +48,7 @@ test("falls back to the backup Twelve Data key when the primary is rate-limited"
       allowDemoFallback: false,
     });
     assert.equal(result.source, "twelvedata");
-    assert.equal(result.usedBackupKey, true);
+    assert.equal(result.chainPosition, 1); // 0 = primary key, 1 = backup key — confirms it fell through to the backup
     assert.ok(result.candles.length > 0);
     assert.ok(getCallCount() >= 2); // confirms it actually tried a second key, not just one call
   } finally {

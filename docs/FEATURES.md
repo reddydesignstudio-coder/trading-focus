@@ -160,6 +160,38 @@ retail strategy guides emphasize that the original 16 didn't cover.)
   and still "open" on another, since each screen was checking independently
   and out of sync).
 
+## Latest additions (data providers, Journal, Backtest, Reset)
+
+- **Multi-provider fallback chain for Stocks/Forex** — Finnhub, Twelve Data
+  (primary+backup), FMP, and Alpha Vantage, tried automatically in order of
+  how usable each free tier actually is. Every one of them is delayed on
+  the free tier — none unlocks real-time data — but having four means the
+  app falls back to demo mode far less often. Throttling is scoped per
+  API key, not just per provider, so switching from a rate-limited key to
+  a working one never means waiting out the first key's cooldown.
+- **The "still shows OPEN after price passed TP" bug — found and fixed.**
+  The Journal's live price display was refreshing on its own schedule,
+  independently of the actual trade-resolution engine, so the two could
+  disagree. Now every price refresh resolves trades first, from that same
+  fresh data.
+- **Journal now shows** the exact date/time each trade opened, and the
+  last actual candlestick pattern detected on that symbol (factual,
+  backward-looking — not a prediction of what forms next, which isn't
+  something this app will ever fake).
+- **Backtest redesigned**: symbol is now a dropdown that dynamically
+  follows your current watchlist for whichever market is selected — no
+  more typing a symbol by hand. It now always tests every strategy for
+  that market automatically; manual strategy picking is gone. Results
+  show as a simplified one-line-per-trade list: Symbol, Entry, Time
+  Taken, Strategy, Confidence, Amount, Win/Loss.
+- **Reset Trade Data** (Settings) — erases every open and closed paper
+  trade plus signal history, with a typed "RESET" confirmation. Deletes
+  records one at a time (not a bulk clear) specifically so each deletion
+  also mirrors out to Firestore if Cloud Sync is on — a bulk clear would
+  only wipe the local copy, and the next sync from another device would
+  silently restore everything. Watchlists/symbols, risk settings, API
+  keys, and saved backtests are untouched.
+
 ## Cloud Sync (Firebase) — optional
 
 - Sync trades, journal, backtests, and settings across iPhone, desktop, and

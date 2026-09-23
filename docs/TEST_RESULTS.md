@@ -3,8 +3,8 @@
 Run with: `npm test` (`node --test tests/*.test.js`), Node v22.
 
 ```
-tests 100
-pass 100
+tests 115
+pass 115
 fail 0
 cancelled 0
 skipped 0
@@ -29,7 +29,9 @@ skipped 0
 | `plainEnglish.test.js` | Every registered strategy (all 19) has a real, jargon-free, direction-aware plain-English explanation — not the generic fallback |
 | `pinLock.test.js` | PIN setup stores a hash (never the plain PIN), correct/incorrect verification, overwriting an existing PIN, enable/disable |
 | `cloudSyncHooks.test.js` | db.js's cloud-sync hook mechanism: `afterPut`/`afterDelete` fire correctly, and `skipCloudSync` suppresses them — this is the loop-prevention logic that stops an incoming sync write from re-triggering an outgoing one |
-| `paperTrading.test.js` | Live Mode refuses to execute a trade sourced from demo data |
+| `cloudConfigParser.test.js` | The lenient Firebase-config parser handles the exact JS-object-literal format Firebase's console shows (unquoted keys, `const` wrapper, trailing comma) via pure string/JSON normalization — never executes the pasted text as code |
+| `providerChain.test.js` | The Stocks/Forex multi-provider fallback chain: falls through a premium-gated Finnhub key to Twelve Data, never calls a provider with no configured key, falls all the way to demo when everything fails |
+| `paperTrading.test.js` | Live Mode refuses to execute a trade sourced from demo data; `resetTradeData` clears trades/signals only (watchlists/settings survive) and deletes one-by-one so Cloud Sync can mirror each deletion |
 | `scanner.integration.test.js` | End-to-end `CHECK FOR TRADE` pipeline against demo data for all 3 markets — well-formed qualifying setups, zero-qualifying handled without forcing a count |
 
 ## Notable things caught during testing (kept here as a running record)
@@ -64,6 +66,21 @@ skipped 0
   structure before shipping, not by a failing test — a good reminder that
   structural/rendering bugs like this need a manual trace, since they don't
   show up in logic-level unit tests.
+- **Journal's live price could show past TP/SL while status still said
+  OPEN** — the live price display refreshed on its own 60s timer,
+  independently of the actual resolution engine, which only ran on tab
+  navigation elsewhere in the app. The two could disagree. Fixed by having
+  the Journal's own refresh cycle resolve trades first, using the same
+  fresh data it displays.
+- **Throttling was scoped per PROVIDER instead of per API KEY** — when
+  Twelve Data's primary key came back rate-limited and the code fell
+  through to the backup key, it was still waiting out the *primary* key's
+  7.5-second throttle window before trying the backup, since both keys
+  shared one throttle bucket keyed only by provider name. In production
+  this meant a real 7.5s delay on every key-switch; caught by a test that
+  went from ~10ms to ~7.5s after the multi-provider chain was added, which
+  was the tell that something outside the test itself had regressed.
+  Fixed by scoping the throttle bucket to provider+key together.
 
 ## What Firebase Cloud Sync is NOT covered by these tests
 
