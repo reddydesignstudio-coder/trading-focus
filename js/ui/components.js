@@ -148,6 +148,7 @@ export function tradeRow(trade, live = null) {
   const statusLabel = { WIN: "Win", LOSS: "Loss", OPEN: "Open", AMBIGUOUS: "Ambiguous" }[trade.status] || trade.status;
   const rows = [
     el("div", { class: "trade-row-top" }, [
+      trade.__displayNumber ? el("span", { class: "trade-number" }, `#${trade.__displayNumber}`) : null,
       el("span", { class: "ticker" }, trade.symbol),
       el("span", { class: `dir-pill dir-${trade.direction}` }, trade.direction === "long" ? "Long" : "Short"),
       el("span", { class: `status-pill ${statusClass}` }, statusLabel),

@@ -3,12 +3,14 @@
 Run with: `npm test` (`node --test tests/*.test.js`), Node v22.
 
 ```
-tests 114
-pass 114
+tests 133 (127 in the main suite + 6 in tests/viewsSmoke.test.js, run separately — see note below)
+pass 133
 fail 0
 cancelled 0
 skipped 0
 ```
+
+Run as two commands: `node --test tests/*.test.js --test-name-pattern='^(?!.*viewsSmoke).*$'` doesn't cleanly exclude a file by glob in this Node version, so in practice: `node --test $(ls tests/*.test.js | grep -v viewsSmoke)` for the main suite, then `node --test tests/viewsSmoke.test.js` separately. Combining them in one invocation causes an unrelated Node test-runner hang — see `FEATURES.md` for detail.
 
 ## Coverage by suite
 

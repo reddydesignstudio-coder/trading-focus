@@ -8,8 +8,98 @@
 // shown as-is with their source and time, exactly like a news
 // aggregator would, because turning news into trade picks would be a
 // market prediction this app is built to never fake.
+//
+// What IS included: detecting which company a headline is actually
+// ABOUT — a factual text match ("this headline mentions Apple" -> AAPL),
+// not a judgment about what that headline means for the stock. The
+// person still decides what to do with that; this just saves them
+// reading every headline to spot the company name themselves.
 
 const BASE_URL = "https://finnhub.io/api/v1";
+
+// Deliberately limited to well-known, unambiguous large-cap names — the
+// kind that show up constantly in general market news. Not exhaustive,
+// and not meant to be: a false miss just means no tag shown, which is
+// safe; the risk to avoid is false/ambiguous matches (e.g. a common
+// word coinciding with a lesser-known ticker), not incompleteness.
+const KNOWN_COMPANIES = {
+  AAPL: ["Apple"],
+  MSFT: ["Microsoft"],
+  GOOGL: ["Google", "Alphabet"],
+  AMZN: ["Amazon"],
+  NVDA: ["Nvidia"],
+  META: ["Meta Platforms", "Facebook"],
+  TSLA: ["Tesla"],
+  NFLX: ["Netflix"],
+  AMD: ["Advanced Micro Devices", "AMD"],
+  INTC: ["Intel"],
+  JPM: ["JPMorgan", "JP Morgan"],
+  BAC: ["Bank of America"],
+  GS: ["Goldman Sachs"],
+  WMT: ["Walmart"],
+  DIS: ["Walt Disney", "Disney"],
+  BA: ["Boeing"],
+  V: ["Visa Inc"],
+  MA: ["Mastercard"],
+  PYPL: ["PayPal"],
+  UBER: ["Uber"],
+  COIN: ["Coinbase"],
+  PLTR: ["Palantir"],
+  SNAP: ["Snapchat", "Snap Inc"],
+  ORCL: ["Oracle"],
+  CRM: ["Salesforce"],
+  ADBE: ["Adobe"],
+  QCOM: ["Qualcomm"],
+  BABA: ["Alibaba"],
+  XOM: ["Exxon Mobil", "ExxonMobil"],
+  CVX: ["Chevron"],
+  PFE: ["Pfizer"],
+  KO: ["Coca-Cola", "Coca Cola"],
+  PEP: ["PepsiCo", "Pepsi"],
+  NKE: ["Nike"],
+  MCD: ["McDonald's", "McDonalds"],
+  SBUX: ["Starbucks"],
+  T: ["AT&T"],
+  VZ: ["Verizon"],
+  GM: ["General Motors"],
+  F: ["Ford Motor", "Ford Motors"],
+};
+
+/**
+ * Factual only: which known company names appear in this text. Returns
+ * tickers, not opinions about direction or significance. A headline can
+ * mention a company for any reason (good news, bad news, unrelated
+ * context) — this doesn't distinguish, on purpose, since doing so would
+ * require the exact kind of judgment this app won't fake.
+ */
+export function extractMentionedSymbols(text) {
+  if (!text) return [];
+  const found = new Set();
+  for (const [ticker, names] of Object.entries(KNOWN_COMPANIES)) {
+    if (names.some((name) => text.toLowerCase().includes(name.toLowerCase()))) {
+      found.add(ticker);
+    }
+  }
+  return [...found];
+}
+
+function annotateArticles(rawArticles) {
+  return rawArticles.map((a) => {
+    const fromApi = (a.related || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const fromText = extractMentionedSymbols(`${a.headline} ${a.summary || ""}`);
+    const mentionedSymbols = [...new Set([...fromApi, ...fromText])];
+    return {
+      headline: a.headline,
+      source: a.source,
+      url: a.url,
+      datetime: new Date(a.datetime * 1000),
+      mentionedSymbols,
+    };
+  });
+}
 
 export async function fetchMarketNews(apiKey, signal) {
   if (!apiKey) return { articles: [], available: false, reason: "NO_API_KEY" };
@@ -19,15 +109,7 @@ export async function fetchMarketNews(apiKey, signal) {
     if (!res.ok) return { articles: [], available: false, reason: "PROVIDER_ERROR" };
     const data = await res.json();
     if (!Array.isArray(data)) return { articles: [], available: false, reason: "PROVIDER_ERROR" };
-    return {
-      articles: data.slice(0, 8).map((a) => ({
-        headline: a.headline,
-        source: a.source,
-        url: a.url,
-        datetime: new Date(a.datetime * 1000),
-      })),
-      available: true,
-    };
+    return { articles: annotateArticles(data.slice(0, 15)), available: true };
   } catch (e) {
     if (e.name === "AbortError") throw e;
     return { articles: [], available: false, reason: "PROVIDER_ERROR" };

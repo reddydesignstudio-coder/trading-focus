@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computePerformance, buildAccountLedger } from "../js/performance.js";
+import { computePerformance, buildAccountLedger, assignTradeNumbers } from "../js/performance.js";
 
 function trade(overrides) {
   return {
@@ -132,4 +132,18 @@ test("buildAccountLedger does not mutate or re-sort the input array — order is
   // Ledger just follows input order — first entry is the LOSS since it was first in the array.
   assert.equal(entries[0].runningBalance, 990);
   assert.equal(entries[1].runningBalance, 1020);
+});
+
+test("assignTradeNumbers assigns sequential display numbers starting at 1, in the order given", () => {
+  const trades = [trade({ id: "a" }), trade({ id: "b" }), trade({ id: "c" })];
+  const numbered = assignTradeNumbers(trades);
+  assert.equal(numbered.length, 3);
+  assert.equal(numbered[0].number, 1);
+  assert.equal(numbered[1].number, 2);
+  assert.equal(numbered[2].number, 3);
+  assert.equal(numbered[0].trade.id, "a");
+});
+
+test("assignTradeNumbers on an empty array returns an empty array", () => {
+  assert.deepEqual(assignTradeNumbers([]), []);
 });

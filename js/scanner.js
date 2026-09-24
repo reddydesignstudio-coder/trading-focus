@@ -28,7 +28,7 @@ import { explainPlainEnglish } from "./plainEnglish.js";
 
 export const DEFAULT_WATCHLISTS = {
   us_stocks: ["AAPL", "MSFT", "NVDA", "TSLA", "AMD", "AMZN", "META", "GOOGL"],
-  forex: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"],
+  forex: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "XAUUSD"],
   crypto: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"],
 };
 

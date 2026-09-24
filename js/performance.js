@@ -181,3 +181,16 @@ export function buildAccountLedger(orderedCompletedTrades, startingBalance) {
   });
   return { openingBalance: startingBalance, entries, endingBalance: round(running, 2) };
 }
+
+/**
+ * Assigns a simple, stable DISPLAY number (#1, #2, ...) to each trade in
+ * the array, based on the order given — the caller decides what order
+ * counts as "chronological" for its context (real trades vs. one
+ * backtest run's trades aren't the same timeline). This is purely a
+ * display aid for talking about "trade #12" — it is NOT stored on the
+ * trade record itself, so it never needs a schema migration and always
+ * reflects whatever's currently in view.
+ */
+export function assignTradeNumbers(trades) {
+  return trades.map((t, i) => ({ trade: t, number: i + 1 }));
+}

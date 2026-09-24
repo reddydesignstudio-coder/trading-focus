@@ -8,7 +8,7 @@ import { getLiveModeStatus, executeTrade, markSignalMissed, saveSignal, TEST_MOD
 import { recalculateTrade } from "../risk.js";
 import { getDailySummary } from "../dailySummary.js";
 import { getAll, put, remove } from "../db.js";
-import { computePerformance, formatHoldingTime, buildAccountLedger } from "../performance.js";
+import { computePerformance, formatHoldingTime, buildAccountLedger, assignTradeNumbers } from "../performance.js";
 import { getStrategyLab } from "../strategyLab.js";
 import { runBacktest } from "../backtest.js";
 import { getMarketData, getUsageStats } from "../dataProviders/index.js";
@@ -132,11 +132,43 @@ function marketPulseNewsCard(state) {
         card.appendChild(el("p", { class: "empty-state" }, "No headlines returned right now."));
         return;
       }
-      result.articles.forEach((a) => {
+
+      const top = topMentionedSymbols(result.articles, 5);
+      if (top.length) {
+        card.appendChild(el("div", { class: "provider-subheading" }, "Symbols in the News"));
+        card.appendChild(
+          el(
+            "p",
+            { class: "focus-reason" },
+            "Companies named in today's headlines below, most-mentioned first — not a recommendation, just which names are showing up. Add any of these to your watchlist and do your own research before deciding anything."
+          )
+        );
+        const watchlist = getWatchlist(state, "us_stocks");
+        const stripRow = el("div", { class: "mentioned-symbols-row" });
+        top.forEach(({ symbol, count }) => {
+          const alreadyIn = watchlist.includes(symbol);
+          stripRow.appendChild(
+            el("div", { class: "mentioned-symbol-chip" }, [
+              el("span", { class: "ticker" }, symbol),
+              el("span", { class: "mentioned-count" }, `${count} headline${count === 1 ? "" : "s"}`),
+              alreadyIn
+                ? el("span", { class: "already-in-watchlist" }, "In watchlist")
+                : el("button", { class: "btn btn-small", onclick: async (e) => {
+                    await updateWatchlist(state, "us_stocks", [...getWatchlist(state, "us_stocks"), symbol]);
+                    e.target.replaceWith(el("span", { class: "already-in-watchlist" }, "Added ✓"));
+                  } }, "+ Add"),
+            ])
+          );
+        });
+        card.appendChild(stripRow);
+        card.appendChild(el("div", { class: "provider-subheading" }, "Headlines"));
+      }
+
+      result.articles.slice(0, 8).forEach((a) => {
         card.appendChild(
           el("a", { href: a.url, target: "_blank", class: "news-item" }, [
             el("div", { class: "news-headline" }, a.headline),
-            el("div", { class: "news-meta" }, `${a.source} · ${a.datetime.toLocaleString()}`),
+            el("div", { class: "news-meta" }, `${a.source} · ${a.datetime.toLocaleString()}${a.mentionedSymbols.length ? ` · ${a.mentionedSymbols.join(", ")}` : ""}`),
           ])
         );
       });
@@ -146,6 +178,13 @@ function marketPulseNewsCard(state) {
       card.appendChild(el("p", { class: "focus-reason" }, "Couldn't load news right now."));
     });
   return card;
+}
+
+/** Counts how many fetched headlines mention each symbol, most-mentioned first — purely a frequency count, not a significance judgment. */
+function topMentionedSymbols(articles, limit = 5) {
+  const counts = new Map();
+  articles.forEach((a) => a.mentionedSymbols.forEach((sym) => counts.set(sym, (counts.get(sym) || 0) + 1)));
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([symbol, count]) => ({ symbol, count }));
 }
 
 function marketPulseCompanyNewsCard(state, market) {
@@ -406,6 +445,12 @@ export async function renderScan(root, state) {
     scanBtn.disabled = true;
     scanBtn.textContent = "Scanning…";
     resultsWrap.innerHTML = "";
+    // Immediate, guaranteed-visible confirmation the click registered — if
+    // this text never appears at all, the button's click handler isn't
+    // firing (a caching/deployment issue); if it appears and then nothing
+    // else ever follows, the scan itself is genuinely stuck and the browser
+    // console will have the real error (logged below).
+    resultsWrap.appendChild(el("p", { class: "loading-inline" }, "Scanning your watchlist…"));
     try {
       const forceProviderId = state.settings.dataProviderOverride?.[market];
       const result = await scanMarket({
@@ -420,6 +465,7 @@ export async function renderScan(root, state) {
         for (const sig of perSymbol.qualifying) await saveSignal(sig, state.effectiveTimeZone());
       }
 
+      resultsWrap.innerHTML = ""; // clear the "Scanning your watchlist…" placeholder now that real results are ready
       const dataBadgeRow = el("div", { class: "data-status-row" }, [dataStatusBadge(result.isDemo ? "DEMO" : result.perSymbol[0]?.dataStatus)]);
       resultsWrap.appendChild(dataBadgeRow);
 
@@ -462,6 +508,8 @@ export async function renderScan(root, state) {
       resultsWrap.appendChild(el("div", { class: "section-title" }, `Symbols Scanned (${result.perSymbol.length})`));
       resultsWrap.appendChild(symbolsScannedTable(result.perSymbol));
     } catch (e) {
+      console.error("Scan failed:", e); // full detail in the browser console for diagnosis — the on-screen message stays plain-English
+      resultsWrap.innerHTML = "";
       resultsWrap.appendChild(el("div", { class: "notice notice-error" }, friendlyErrorMessage(e)));
     } finally {
       scanBtn.disabled = false;
@@ -622,12 +670,13 @@ export async function renderAccountLedger(root, state) {
   let running = startingBalance;
   const ledgerList = el("div", { class: "ledger-list" });
   const { entries, endingBalance } = buildAccountLedger(liveCompleted, startingBalance);
-  entries.forEach(({ trade: t, runningBalance }) => {
+  entries.forEach(({ trade: t, runningBalance }, idx) => {
     const statusClass = { WIN: "status-win", LOSS: "status-loss", AMBIGUOUS: "status-ambiguous" }[t.status] || "";
     const statusLabel = { WIN: "Win", LOSS: "Loss", AMBIGUOUS: "Ambiguous" }[t.status] || t.status;
     ledgerList.appendChild(
       el("div", { class: `ledger-row ${statusClass}` }, [
         el("div", { class: "ledger-row-top" }, [
+          el("span", { class: "trade-number" }, `#${idx + 1}`),
           el("span", { class: "ledger-date" }, new Date(t.resolvedAt || t.createdAt).toLocaleString()),
           el("span", { class: `status-pill ${statusClass}` }, statusLabel),
         ]),
@@ -793,6 +842,13 @@ export async function renderJournal(root, state) {
     root.appendChild(el("p", { class: "empty-state" }, "No trades yet. Run Check for Trade and paper trade a signal to start your journal."));
     return;
   }
+
+  // Trade numbers are assigned by TRUE chronological order (oldest = #1),
+  // independent of how the list is currently sorted/filtered for display —
+  // so "Trade #12" always refers to the same trade no matter which filter
+  // you're looking through.
+  const numberByTradeId = new Map(assignTradeNumbers([...trades].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))).map(({ trade: t, number }) => [t.id, number]));
+  trades.forEach((t) => { t.__displayNumber = numberByTradeId.get(t.id); });
 
   const listContainer = el("div", {});
   root.appendChild(listContainer);
@@ -1189,6 +1245,8 @@ export async function renderBacktest(root, state) {
     if (allTrades.length) {
       const tradeListContainer = el("div", {});
       resultsWrap.appendChild(tradeListContainer);
+      const numberByBtTradeId = new Map(assignTradeNumbers([...allTrades].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))).map(({ trade: t, number }) => [t.id, number]));
+      allTrades.forEach((t) => { t.__displayNumber = numberByBtTradeId.get(t.id); });
       renderTradeLogBrowser(tradeListContainer, [...allTrades].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)), {
         modeOptions: [
           { value: "all", label: "All Trades" },
@@ -1294,6 +1352,8 @@ async function renderBacktestHistory(container, state) {
         tradeListContainer.appendChild(el("p", { class: "empty-state" }, "This saved run predates per-trade storage, or generated no trades — only the aggregate stats above are available."));
         return;
       }
+      const numberBySavedTradeId = new Map(assignTradeNumbers([...run.trades].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))).map(({ trade: t, number }) => [t.id, number]));
+      run.trades.forEach((t) => { t.__displayNumber = numberBySavedTradeId.get(t.id); });
       renderTradeLogBrowser(tradeListContainer, [...run.trades].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)), {
         modeOptions: [
           { value: "all", label: "All Trades" },
@@ -1330,6 +1390,7 @@ function simpleBacktestRow(trade) {
   const holdingTime = trade.resolvedAt && trade.createdAt ? formatHoldingTime(new Date(trade.resolvedAt) - new Date(trade.createdAt)) : "—";
   return el("div", { class: `simple-bt-row ${statusClass}`, "data-trade-id": trade.id }, [
     el("div", { class: "simple-bt-row-top" }, [
+      trade.__displayNumber ? el("span", { class: "trade-number" }, `#${trade.__displayNumber}`) : null,
       el("span", { class: "ticker" }, trade.symbol),
       el("span", { class: `dir-pill dir-${trade.direction}` }, trade.direction === "long" ? "Long" : "Short"),
       el("span", { class: `status-pill ${statusClass}` }, statusLabel),
@@ -1668,7 +1729,13 @@ function numberField(label, value, onChange) {
 }
 /** Shows "X requests made this session" (and, when a limit is documented, "of Y/window") for one provider+key, next to its field in Settings. Nothing shown if the key is blank. */
 function usageLine(providerId, apiKey) {
-  if (!apiKey) return null;
+  // Never return null — appendChild(null) throws in a real browser exactly
+  // like it does in the fake DOM used to catch this: any settings page
+  // with even one empty API key field (the default/common case, especially
+  // on a brand-new browser with nothing saved yet) would hit this on the
+  // very first empty field and abort the entire render, leaving Settings
+  // blank. An empty, harmless node is always safe to append instead.
+  if (!apiKey) return el("span", {});
   const usage = getUsageStats(providerId, apiKey);
   const limitText = usage.limitValue ? ` of ~${usage.limitValue}/${usage.limitWindow} (documented free-tier limit)` : "";
   return el("p", { class: "usage-line" }, `${usage.totalThisSession} request${usage.totalThisSession === 1 ? "" : "s"} made this session${limitText}.`);

@@ -151,6 +151,14 @@ body {
 .market-pulse-card { padding: 12px 14px; }
 .news-item { display: block; padding: 8px 0; border-bottom: 1px solid var(--border); text-decoration: none; color: inherit; }
 .news-item:last-child { border-bottom: none; }
+.mentioned-symbols-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+.mentioned-symbol-chip {
+  display: flex; align-items: center; gap: 6px; background: var(--bg-elevated);
+  border: 1px solid var(--border); border-radius: 999px; padding: 5px 10px; font-size: 12px;
+}
+.mentioned-count { color: var(--text-dim); font-size: 11px; }
+.already-in-watchlist { color: var(--green); font-size: 11px; font-weight: 600; }
+.btn-small { padding: 3px 8px; font-size: 11px; min-height: unset; }
 .news-headline { font-size: 13px; color: var(--text); line-height: 1.4; margin-bottom: 3px; }
 .news-meta { font-size: 11px; color: var(--text-dim); }
 .activity-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
@@ -297,6 +305,7 @@ body {
 .ledger-pnl-pos { color: var(--green); font-weight: 600; }
 .ledger-pnl-neg { color: var(--red); font-weight: 600; }
 .ledger-running { margin-left: auto; font-weight: 700; font-variant-numeric: tabular-nums; }
+.trade-number { font-size: 11px; color: var(--text-dim); font-weight: 700; font-variant-numeric: tabular-nums; }
 .tradelog-controls { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
 .tradelog-mode-select { min-height: 40px; }
 .tradelog-date-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; }

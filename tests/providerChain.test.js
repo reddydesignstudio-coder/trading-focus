@@ -202,3 +202,40 @@ test("getUsageStats tracks cumulative calls per provider+key and reports the doc
     restore();
   }
 });
+
+test("Twelve Data forex symbols are converted to BASE/QUOTE slash format, per Twelve Data's own documented requirement", async () => {
+  const { toTwelveDataSymbol } = await import("../js/dataProviders/twelveData.js");
+  assert.equal(toTwelveDataSymbol("EURUSD", "forex"), "EUR/USD");
+  assert.equal(toTwelveDataSymbol("XAUUSD", "forex"), "XAU/USD");
+  assert.equal(toTwelveDataSymbol("USDJPY", "forex"), "USD/JPY");
+});
+
+test("Twelve Data stock symbols are left as plain tickers, never given a slash", async () => {
+  const { toTwelveDataSymbol } = await import("../js/dataProviders/twelveData.js");
+  assert.equal(toTwelveDataSymbol("AAPL", "us_stocks"), "AAPL");
+});
+
+test("an already-slashed forex symbol is left alone (idempotent)", async () => {
+  const { toTwelveDataSymbol } = await import("../js/dataProviders/twelveData.js");
+  assert.equal(toTwelveDataSymbol("EUR/USD", "forex"), "EUR/USD");
+});
+
+test("getCandles actually sends the slash-formatted symbol in the request URL for forex", async () => {
+  let capturedUrl = null;
+  const restore = stubFetchByHost([
+    [
+      "twelvedata.com",
+      (u) => {
+        capturedUrl = u.toString();
+        return jsonResponse(200, { status: "ok", values: [{ datetime: "2026-01-01 10:00:00", open: 1, high: 1, low: 1, close: 1, volume: 0 }] });
+      },
+    ],
+  ]);
+  try {
+    const { twelveDataProvider } = await import("../js/dataProviders/twelveData.js");
+    await twelveDataProvider.getCandles({ symbol: "XAUUSD", market: "forex", timeframe: "1h", limit: 10, apiKey: "test-key" });
+    assert.ok(capturedUrl.includes("symbol=XAU%2FUSD") || capturedUrl.includes("symbol=XAU/USD"), `expected slash-encoded symbol in URL, got: ${capturedUrl}`);
+  } finally {
+    restore();
+  }
+});

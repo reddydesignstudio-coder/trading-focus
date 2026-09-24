@@ -16,6 +16,19 @@ const BASE_URL = "https://api.twelvedata.com";
 
 const INTERVAL_MAP = { "1m": "1min", "5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h", "1d": "1day" };
 
+/**
+ * Twelve Data requires forex (and crypto, on their platform) symbols in
+ * BASE/QUOTE slash format — "EUR/USD", not "EURUSD" — per their own
+ * documentation. This app's internal symbol format is always the plain
+ * 6-character form (matching every other provider), so it needs
+ * converting here, at the one place that actually needs it, rather than
+ * changing the shared internal format everywhere.
+ */
+export function toTwelveDataSymbol(symbol, market) {
+  if (market !== "forex" || symbol.includes("/")) return symbol;
+  return `${symbol.slice(0, 3)}/${symbol.slice(3, 6)}`;
+}
+
 export const twelveDataProvider = {
   id: "twelvedata",
   name: "Twelve Data",
@@ -24,12 +37,13 @@ export const twelveDataProvider = {
   signupUrl: "https://twelvedata.com/pricing",
   markets: ["us_stocks", "forex"],
 
-  async getCandles({ symbol, timeframe, limit = 200, apiKey, signal }) {
+  async getCandles({ symbol, market, timeframe, limit = 200, apiKey, signal }) {
     if (!apiKey) {
       return { candles: [], status: "UNAVAILABLE", isDemo: false, asOf: new Date(), source: "twelvedata", reason: "NO_API_KEY" };
     }
     const interval = INTERVAL_MAP[timeframe] || "15min";
-    const url = `${BASE_URL}/time_series?symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=${limit}&apikey=${apiKey}`;
+    const tdSymbol = toTwelveDataSymbol(symbol, market);
+    const url = `${BASE_URL}/time_series?symbol=${encodeURIComponent(tdSymbol)}&interval=${interval}&outputsize=${limit}&apikey=${apiKey}`;
     const res = await fetch(url, { signal });
     const data = await res.json();
     if (data.status === "error" || !data.values) {
@@ -62,7 +76,7 @@ export const twelveDataProvider = {
       asOf: new Date(),
       source: "twelvedata",
       symbol,
-      market: symbol.includes("/") ? "forex" : "us_stocks",
+      market: market || (symbol.includes("/") ? "forex" : "us_stocks"),
       timeframe,
     };
   },

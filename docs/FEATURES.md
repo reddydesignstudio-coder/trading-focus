@@ -160,6 +160,81 @@ retail strategy guides emphasize that the original 16 didn't cover.)
   and still "open" on another, since each screen was checking independently
   and out of sync).
 
+## A new verification layer: actually running the UI, not just checking its syntax
+
+Every prior round of fixes only ever confirmed the code was syntactically
+valid (`node --check`) and that pure logic modules behaved correctly
+(`node --test` against indicators, risk, performance, etc.) — but no
+check ever actually EXECUTED the page-building functions in
+`js/ui/views.js` the way a real browser does. That gap let two genuine,
+user-facing bugs ship silently. Both were found the moment a real
+runtime check was finally added.
+
+`tests/helpers/fakeDom.js` is a deliberately minimal fake browser
+(`document`, `window`, `localStorage`) — just enough surface area to
+actually call `renderHome`, `renderSettings`, `renderScan`, and every
+other screen and see whether they throw. `tests/viewsSmoke.test.js`
+does exactly that, including the specific scenario that had never been
+tested before: a completely fresh, never-configured settings object —
+i.e., opening the app in a brand-new browser.
+
+**Bugs this caught immediately:**
+- **Settings page blank on any browser with an empty API key field** —
+  `usageLine()` returned `null` for an empty key, and `appendChild(null)`
+  throws in a real browser exactly like it does in the fake one, aborting
+  the whole render. Every brand-new browser has zero saved keys, so this
+  fired on the very first field, every time. This is the actual
+  explanation for "Settings doesn't load in a different browser" — not
+  authentication, since this app doesn't have any login requirement to
+  begin with.
+- **Home rendering everything twice** — found via manual tracing after
+  the smoke test confirmed `renderHome` itself was NOT the problem (it
+  ran cleanly and fast in isolation). Firebase's `onAuthStateChanged`
+  fires once immediately upon subscription with whatever the current
+  auth state already is; that immediate, harmless callback was
+  registered before the real initial `setTab()` call and raced with it,
+  so both renders' async pieces landed in the same container at once.
+
+Note: `tests/viewsSmoke.test.js` must currently be run as its own
+command (`node --test tests/viewsSmoke.test.js`), separate from the
+rest of the suite — running it together with every other file via a
+single glob causes Node's test runner itself to hang for an
+undiagnosed reason unrelated to the app's own code (confirmed via
+process-handle inspection: no dangling network sockets, no leaked
+timers). Both commands are green.
+
+## Twelve Data forex symbol format — a real, pre-existing bug
+
+Twelve Data's API requires forex symbols in `BASE/QUOTE` slash format
+(`EUR/USD`), not this app's internal plain format (`EURUSD`) — confirmed
+against Twelve Data's own documentation. The provider was sending the
+unslashed form directly, which meant Twelve Data likely never correctly
+resolved a SINGLE forex request this entire build, regardless of which
+pair, silently falling through to the next provider or demo data instead
+every time. Fixed with a small, tested conversion function applied only
+where it's needed (Twelve Data specifically — every other provider
+already expected the plain format).
+
+## XAUUSD (Gold)
+
+Added to the default Forex watchlist. Works through the exact same
+pipeline as every other forex pair — position sizing, target/stop
+calculations, and the forex strategies all already work in relative
+percentage or raw price-difference terms rather than assuming a
+currency-pair-typical price magnitude, so gold's much higher price level
+(~$2,000+) needed no special-casing anywhere except the symbol-format fix
+above. If your watchlist was already saved before this update, add
+XAUUSD manually via Settings → Watchlists — existing customizations are
+never silently overwritten by a new default.
+
+## Trade numbers
+
+Journal, the Account Balance ledger, and every Backtest result now show
+a `#N` trade number, assigned by true chronological order (oldest = #1)
+independent of how the list is currently sorted or filtered — so "trade
+#12" always refers to the same trade. Display-only (not stored on the
+trade record), via a small tested function in `performance.js`.
+
 ## Fixed the real cause of "Check for Trade does nothing"
 
 - **The service worker was serving the app cache-first** — once a browser
@@ -207,6 +282,22 @@ lock screen. The app no longer has any lock-screen concept.
   merges independent single-symbol timelines into one chronological
   view — it is NOT a real multi-symbol portfolio simulation with shared
   capital constraints, and says so directly in the results.
+
+## Market Pulse — "Symbols in the News," refined after feedback
+
+Rather than declining the request outright, this now surfaces which
+companies are actually NAMED in current headlines — a "Symbols in the
+News" strip, ranked by how many headlines mention each one, with a
+one-tap **+ Add to Watchlist** button per symbol. What it still won't
+do: say what a headline means for the price, or rank symbols by
+predicted opportunity — only by how often they're named, which is a
+plain count, not a judgment call. Detection combines Finnhub's own
+`related` field (when present) with a small, deliberately conservative
+company-name→ticker list checked against the headline and summary text
+— a false miss is fine (no tag shown), a false/ambiguous match is what's
+avoided. Fully unit tested, including a test asserting the output is
+nothing but ticker strings — never a direction, sentiment, or
+recommendation field attached.
 
 ## Market Pulse — the news feature, done honestly
 

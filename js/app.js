@@ -111,15 +111,34 @@ async function setTab(tabId) {
 async function boot() {
   state.settings = await loadSettings();
 
+  const hashTab = window.location.hash.replace("#", "");
+  const initialTab = TABS.find((t) => t.id === hashTab) ? hashTab : "home";
+  buildNav();
+  await setTab(initialTab);
+
   // Cloud sync: wires db.js's write path to also mirror to Firestore, IF a
   // config was previously saved (from Settings → Cloud Sync). No-op, and no
   // Firebase code ever downloaded, if the person hasn't set this up.
+  //
+  // Registered AFTER the initial render on purpose: Firebase's
+  // onAuthStateChanged always fires once immediately upon subscription with
+  // whatever the current auth state already is — registering it BEFORE the
+  // initial setTab() meant that immediate first callback raced with, and
+  // overlapped, the real initial render, so both renders' async pieces
+  // (Market Pulse's news fetch, etc.) landed in the same container at once
+  // — the "everything on Home shows twice" bug. Registering afterward means
+  // that harmless first callback fires against an already-settled page.
   registerCloudSyncHooks(db);
   try {
     const { initialized } = await initFromSavedConfig();
     if (initialized) {
+      let isFirstAuthCallback = true;
       onAuthChange(() => {
-        if (state.currentTab) setTab(state.currentTab); // re-render on sign-in/sign-out so Settings reflects it
+        if (isFirstAuthCallback) {
+          isFirstAuthCallback = false; // this first call just reports the already-known state — nothing actually changed, skip the re-render
+          return;
+        }
+        if (state.currentTab) setTab(state.currentTab); // a REAL sign-in/sign-out happened — re-render so it shows up
       });
       onRemoteChange(() => {
         if (state.currentTab) setTab(state.currentTab); // a change arrived from another device — refresh what's on screen
@@ -128,11 +147,6 @@ async function boot() {
   } catch (e) {
     console.warn("Cloud sync init failed", e);
   }
-
-  const hashTab = window.location.hash.replace("#", "");
-  const initialTab = TABS.find((t) => t.id === hashTab) ? hashTab : "home";
-  buildNav();
-  await setTab(initialTab);
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./service-worker.js").catch((e) => console.warn("SW registration failed", e));
