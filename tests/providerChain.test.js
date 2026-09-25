@@ -47,7 +47,6 @@ test("chain falls through Finnhub (403, premium-only) to Twelve Data successfull
       timeframe: "15m",
       limit: 30,
       apiKeys: { finnhub: "finnhub-key", twelvedata: "td-key" },
-      allowDemoFallback: false,
     });
     assert.equal(result.source, "twelvedata");
     assert.equal(result.chainPosition, 1); // 0 = finnhub (failed), 1 = twelvedata (succeeded)
@@ -93,7 +92,6 @@ test("chain never even calls a provider whose key isn't configured", async () =>
       timeframe: "15m",
       limit: 30,
       apiKeys: { twelvedata: "td-key" },
-      allowDemoFallback: false,
     });
     assert.equal(result.source, "twelvedata");
     assert.equal(fmpCalled, false);
@@ -102,7 +100,7 @@ test("chain never even calls a provider whose key isn't configured", async () =>
   }
 });
 
-test("falls all the way through to demo data when the whole chain fails, and every provider is DELAYED never LIVE", async () => {
+test("when the whole provider chain fails, the result is a clean UNAVAILABLE — never a silent substitution of fake data", async () => {
   const restore = stubFetchByHost([
     ["finnhub.io", () => jsonResponse(429, {})],
     ["twelvedata.com", () => jsonResponse(429, { status: "error", code: 429 })],
@@ -118,15 +116,16 @@ test("falls all the way through to demo data when the whole chain fails, and eve
       timeframe: "15m",
       limit: 30,
       apiKeys: { finnhub: "a", twelvedata: "b", fmp: "c", alphavantage: "d" },
-      allowDemoFallback: true,
     });
-    assert.equal(result.isDemo, true);
+    assert.equal(result.isDemo, false);
+    assert.equal(result.status, "UNAVAILABLE");
+    assert.equal(result.candles.length, 0);
   } finally {
     restore();
   }
 });
 
-test("no configured keys at all -> UNAVAILABLE/NO_API_KEY, not a crash, before demo fallback", async () => {
+test("no configured keys at all -> UNAVAILABLE/NO_API_KEY, not a crash", async () => {
   const { getMarketData, invalidateCache } = await import("../js/dataProviders/index.js?t=" + Date.now());
   invalidateCache();
   const result = await getMarketData({
@@ -135,13 +134,12 @@ test("no configured keys at all -> UNAVAILABLE/NO_API_KEY, not a crash, before d
     timeframe: "15m",
     limit: 30,
     apiKeys: {},
-    allowDemoFallback: false,
   });
   assert.equal(result.status, "UNAVAILABLE");
   assert.equal(result.reason, "NO_API_KEY");
 });
 
-test("a provider that never responds times out instead of hanging the scan forever", async () => {
+test("a provider that never responds times out rather than hanging the scan forever, and still returns a clean UNAVAILABLE — not fabricated data", async () => {
   const restore = stubFetchByHost([
     ["twelvedata.com", () => new Promise(() => {})], // never resolves — simulates a hung request
   ]);
@@ -155,10 +153,10 @@ test("a provider that never responds times out instead of hanging the scan forev
       timeframe: "15m",
       limit: 30,
       apiKeys: { twelvedata: "td-key" },
-      allowDemoFallback: true,
     });
     const elapsed = Date.now() - start;
-    assert.equal(result.isDemo, true); // fell through to demo rather than hanging forever
+    assert.equal(result.isDemo, false);
+    assert.equal(result.status, "UNAVAILABLE");
     assert.ok(elapsed < 20000, `expected the timeout to resolve well under 20s, took ${elapsed}ms`);
   } finally {
     restore();
@@ -191,7 +189,7 @@ test("getUsageStats tracks cumulative calls per provider+key and reports the doc
     assert.equal(usage.limitValue, 800);
     assert.equal(usage.limitWindow, "day");
 
-    await getMarketData({ symbol: "AAPL", market: "us_stocks", timeframe: "15m", limit: 30, apiKeys: { twelvedata: "my-key" }, allowDemoFallback: false });
+    await getMarketData({ symbol: "AAPL", market: "us_stocks", timeframe: "15m", limit: 30, apiKeys: { twelvedata: "my-key" } });
     usage = getUsageStats("twelvedata", "my-key");
     assert.equal(usage.totalThisSession, 1);
 

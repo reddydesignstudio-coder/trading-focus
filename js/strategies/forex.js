@@ -6,6 +6,8 @@ export const londonBreakout = {
   name: "London Breakout",
   description: "Trades the breakout of the Asian/pre-London range at the London open.",
   market: "forex",
+  minCandles: 50, // longest indicator this strategy uses needs at least this many to produce a value at all
+  recommendedCandles: 100, // enough for that indicator to be considered "settled" rather than still warming up
   applicableRegime: ["Breakout", "Weak Uptrend", "Weak Downtrend", "Strong Uptrend", "Strong Downtrend"],
   timeframe: "15m entry / 1h context",
   minRR: 2,
@@ -57,6 +59,8 @@ export const overlapMomentum = {
   name: "London/New York Overlap Momentum",
   description: "Trades continuation moves in the direction of the prevailing trend during the highest-liquidity overlap window.",
   market: "forex",
+  minCandles: 50, // longest indicator this strategy uses needs at least this many to produce a value at all
+  recommendedCandles: 100, // enough for that indicator to be considered "settled" rather than still warming up
   applicableRegime: ["Strong Uptrend", "Strong Downtrend", "Weak Uptrend", "Weak Downtrend"],
   timeframe: "15m",
   minRR: 2,
@@ -114,6 +118,8 @@ export const trendPullbackFx = {
   name: "Trend Pullback",
   description: "Buys pullbacks to EMA20 in an FX uptrend, sells rallies in a downtrend.",
   market: "forex",
+  minCandles: 70, // longest indicator this strategy uses needs at least this many to produce a value at all
+  recommendedCandles: 150, // enough for that indicator to be considered "settled" rather than still warming up
   applicableRegime: ["Strong Uptrend", "Weak Uptrend", "Strong Downtrend", "Weak Downtrend"],
   timeframe: "1h",
   minRR: 2,
@@ -122,7 +128,9 @@ export const trendPullbackFx = {
   stopLogic: "Beyond the most recent swing.",
   targetLogic: "Prior swing extreme or ATR multiple.",
   invalidations: "Close beyond EMA50 against the trend.",
-  evaluate(ctx) {
+  // Editable in Settings → Strategy Thresholds.
+  defaultThresholds: { emaProximity: 0.0015, rsiLongMin: 40, rsiLongMax: 65, rsiShortMin: 35, rsiShortMax: 60 },
+  evaluate(ctx, thresholds = this.defaultThresholds) {
     const { trendLabel } = ctx.regimeResult;
     const i = ctx.candles.length - 1;
     const ema20 = ctx.indicators.ema20[i];
@@ -130,9 +138,10 @@ export const trendPullbackFx = {
     const rsiVal = ctx.indicators.rsi14[i];
     if (ema20 === null || ema50 === null || rsiVal === null) return null;
     const lastC = ctx.candles[i];
-    const nearEma = Math.abs(lastC.c - ema20) / lastC.c < 0.0015;
+    const emaProximity = thresholds.emaProximity ?? 0.0015;
+    const nearEma = Math.abs(lastC.c - ema20) / lastC.c < emaProximity;
 
-    if ((trendLabel === "Strong Uptrend" || trendLabel === "Weak Uptrend") && nearEma && rsiVal > 40 && rsiVal < 65) {
+    if ((trendLabel === "Strong Uptrend" || trendLabel === "Weak Uptrend") && nearEma && rsiVal > (thresholds.rsiLongMin ?? 40) && rsiVal < (thresholds.rsiLongMax ?? 65)) {
       const swingLow = lastSwingLow(ctx.structure.swings);
       const swingHigh = lastSwingHigh(ctx.structure.swings);
       return makeCandidate({
@@ -146,9 +155,10 @@ export const trendPullbackFx = {
         rationale: `Pullback to EMA20 (${ema20.toFixed(5)}) within an FX uptrend; RSI resetting from ${rsiVal.toFixed(1)}.`,
         invalidation: `Close below EMA50 (${ema50.toFixed(5)}).`,
         minRR: this.minRR,
+        measuredValues: { rsi: rsiVal, emaDistancePct: Math.abs(lastC.c - ema20) / lastC.c },
       });
     }
-    if ((trendLabel === "Strong Downtrend" || trendLabel === "Weak Downtrend") && nearEma && rsiVal < 60 && rsiVal > 35) {
+    if ((trendLabel === "Strong Downtrend" || trendLabel === "Weak Downtrend") && nearEma && rsiVal < (thresholds.rsiShortMax ?? 60) && rsiVal > (thresholds.rsiShortMin ?? 35)) {
       const swingHigh = lastSwingHigh(ctx.structure.swings);
       const swingLow = lastSwingLow(ctx.structure.swings);
       return makeCandidate({
@@ -162,6 +172,7 @@ export const trendPullbackFx = {
         rationale: `Rally into EMA20 (${ema20.toFixed(5)}) within an FX downtrend; RSI resetting from ${rsiVal.toFixed(1)}.`,
         invalidation: `Close above EMA50 (${ema50.toFixed(5)}).`,
         minRR: this.minRR,
+        measuredValues: { rsi: rsiVal, emaDistancePct: Math.abs(lastC.c - ema20) / lastC.c },
       });
     }
     return null;
@@ -173,6 +184,8 @@ export const liquiditySweepReversal = {
   name: "Liquidity Sweep + Reversal",
   description: "Fades a brief spike beyond a swing high/low (a stop-hunt/liquidity sweep) that immediately reverses back inside the range.",
   market: "forex",
+  minCandles: 50, // longest indicator this strategy uses needs at least this many to produce a value at all
+  recommendedCandles: 100, // enough for that indicator to be considered "settled" rather than still warming up
   applicableRegime: ["Range", "Weak Uptrend", "Weak Downtrend"],
   timeframe: "15m",
   minRR: 1.5,
@@ -227,6 +240,8 @@ export const srRejectionFx = {
   name: "Support/Resistance Rejection",
   description: "Fades a clean reaction off a well-touched support/resistance level.",
   market: "forex",
+  minCandles: 50, // longest indicator this strategy uses needs at least this many to produce a value at all
+  recommendedCandles: 100, // enough for that indicator to be considered "settled" rather than still warming up
   applicableRegime: ["Range", "Weak Uptrend", "Weak Downtrend"],
   timeframe: "1h",
   minRR: 1.5,

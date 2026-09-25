@@ -7,6 +7,8 @@ export const openingRangeBreakout = {
   name: "Opening Range Breakout + Volume",
   description: "Trades a breakout of the first N bars' range on the entry timeframe, confirmed by expanding volume.",
   market: "us_stocks",
+  minCandles: 50, // longest indicator this strategy uses needs at least this many to produce a value at all
+  recommendedCandles: 100, // enough for that indicator to be considered "settled" rather than still warming up
   applicableRegime: ["Breakout", "Strong Uptrend", "Strong Downtrend", "Weak Uptrend", "Weak Downtrend"],
   timeframe: "5m entry / 15m context",
   minRR: 2,
@@ -15,7 +17,15 @@ export const openingRangeBreakout = {
   stopLogic: "Opposite side of the opening range (or breakout candle low/high, whichever is tighter).",
   targetLogic: "Structural target: next resistance/support beyond the range, minimum configured R:R.",
   invalidations: "Price re-enters the opening range and closes back inside it.",
-  evaluate(ctx) {
+  // Editable in Settings → Strategy Thresholds. These are the exact values
+  // that were previously hardcoded literals inside evaluate() below —
+  // moving them here changes nothing for anyone until they're explicitly
+  // tuned. rvolMin is also the one this strategy's "why" doc calls out;
+  // orBars intentionally stays out of the tunable set for now (changing
+  // it changes what "the opening range" even means, not just a filter
+  // threshold — a bigger, more deliberate decision than a slider).
+  defaultThresholds: { rvolMin: 1.5 },
+  evaluate(ctx, thresholds = this.defaultThresholds) {
     const OR_BARS = 6; // first ~30 min on 5m bars
     const rangeSlice = ctx.candles.slice(0, OR_BARS);
     if (ctx.candles.length <= OR_BARS + 2 || !rangeSlice.length) return null;
@@ -23,8 +33,9 @@ export const openingRangeBreakout = {
     const orLow = Math.min(...rangeSlice.map((c) => c.l));
     const lastC = ctx.candles[ctx.candles.length - 1];
     const rvol = ctx.indicators.rvol20[ctx.candles.length - 1];
+    const rvolMin = thresholds.rvolMin ?? 1.5;
 
-    if (lastC.c > orHigh && rvol !== null && rvol >= 1.5) {
+    if (lastC.c > orHigh && rvol !== null && rvol >= rvolMin) {
       return makeCandidate({
         strategyId: this.id,
         direction: "long",
@@ -36,9 +47,10 @@ export const openingRangeBreakout = {
         rationale: `Broke above opening-range high ($${orHigh.toFixed(2)}) with RVOL ${rvol.toFixed(2)}x.`,
         invalidation: `Close back below opening-range high ($${orHigh.toFixed(2)}).`,
         minRR: this.minRR,
+        measuredValues: { rvol }, // captured for future threshold-tuning suggestions — see js/strategyThresholds.js
       });
     }
-    if (lastC.c < orLow && rvol !== null && rvol >= 1.5) {
+    if (lastC.c < orLow && rvol !== null && rvol >= rvolMin) {
       return makeCandidate({
         strategyId: this.id,
         direction: "short",
@@ -50,6 +62,7 @@ export const openingRangeBreakout = {
         rationale: `Broke below opening-range low ($${orLow.toFixed(2)}) with RVOL ${rvol.toFixed(2)}x.`,
         invalidation: `Close back above opening-range low ($${orLow.toFixed(2)}).`,
         minRR: this.minRR,
+        measuredValues: { rvol },
       });
     }
     return null;
@@ -61,6 +74,8 @@ export const breakoutVolume = {
   name: "Breakout + Volume",
   description: "Trades a decisive close beyond a recent N-bar high/low with volume confirmation.",
   market: "us_stocks",
+  minCandles: 50, // longest indicator this strategy uses needs at least this many to produce a value at all
+  recommendedCandles: 100, // enough for that indicator to be considered "settled" rather than still warming up
   applicableRegime: ["Breakout", "Strong Uptrend", "Strong Downtrend"],
   timeframe: "15m",
   minRR: 2,
@@ -118,6 +133,8 @@ export const breakoutRetest = {
   name: "Breakout Retest",
   description: "Waits for a prior breakout level to be retested and held before entering — avoids chasing.",
   market: "us_stocks",
+  minCandles: 50, // longest indicator this strategy uses needs at least this many to produce a value at all
+  recommendedCandles: 100, // enough for that indicator to be considered "settled" rather than still warming up
   applicableRegime: ["Breakout", "Strong Uptrend", "Strong Downtrend", "Weak Uptrend", "Weak Downtrend"],
   timeframe: "15m",
   minRR: 2,
@@ -173,6 +190,8 @@ export const trendPullback = {
   name: "Trend Pullback",
   description: "Buys pullbacks to the rising EMA20/50 in an established uptrend (or sells rallies in a downtrend).",
   market: "us_stocks",
+  minCandles: 70, // longest indicator this strategy uses needs at least this many to produce a value at all
+  recommendedCandles: 150, // enough for that indicator to be considered "settled" rather than still warming up
   applicableRegime: ["Strong Uptrend", "Weak Uptrend", "Strong Downtrend", "Weak Downtrend"],
   timeframe: "15m / 1h context",
   minRR: 2,
@@ -230,6 +249,8 @@ export const vwapReclaim = {
   name: "VWAP Reclaim/Rejection",
   description: "Trades a reclaim of session VWAP from below (long) or rejection from above (short) as a mean-reversion-to-trend setup.",
   market: "us_stocks",
+  minCandles: 50, // longest indicator this strategy uses needs at least this many to produce a value at all
+  recommendedCandles: 100, // enough for that indicator to be considered "settled" rather than still warming up
   applicableRegime: ["Range", "Weak Uptrend", "Weak Downtrend", "Strong Uptrend", "Strong Downtrend"],
   timeframe: "5m / 15m",
   minRR: 1.5,
@@ -287,6 +308,8 @@ export const relativeStrengthBreakout = {
   name: "Relative Strength Breakout",
   description: "Trades a breakout in a symbol showing relative strength (or weakness) versus its sector/benchmark.",
   market: "us_stocks",
+  minCandles: 50, // longest indicator this strategy uses needs at least this many to produce a value at all
+  recommendedCandles: 100, // enough for that indicator to be considered "settled" rather than still warming up
   applicableRegime: ["Breakout", "Strong Uptrend", "Strong Downtrend"],
   timeframe: "15m",
   minRR: 2,
@@ -345,6 +368,8 @@ export const bollingerMeanReversion = {
   name: "Bollinger Band Mean Reversion",
   description: "Fades a touch of the outer Bollinger Band back toward the middle band — a range-bound counterpart to the trend strategies above, added because Bollinger mean reversion is one of the most widely used range setups and wasn't covered.",
   market: "us_stocks",
+  minCandles: 50, // longest indicator this strategy uses needs at least this many to produce a value at all
+  recommendedCandles: 100, // enough for that indicator to be considered "settled" rather than still warming up
   applicableRegime: ["Range"],
   timeframe: "15m",
   minRR: 1.5,
@@ -397,6 +422,8 @@ export const gapAndGo = {
   name: "Gap and Go",
   description: "Trades continuation of an overnight gap (today's open vs. the prior session's close) on strong relative volume — a very widely used retail opening-session strategy that wasn't covered.",
   market: "us_stocks",
+  minCandles: 50, // longest indicator this strategy uses needs at least this many to produce a value at all
+  recommendedCandles: 100, // enough for that indicator to be considered "settled" rather than still warming up
   applicableRegime: ["Breakout", "Strong Uptrend", "Strong Downtrend", "Weak Uptrend", "Weak Downtrend"],
   timeframe: "15m",
   minRR: 2,

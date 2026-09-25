@@ -6,6 +6,8 @@ export const breakoutRetestCrypto = {
   name: "Breakout + Retest",
   description: "Trades a retest-and-hold of a broken range level, 24/7 market variant.",
   market: "crypto",
+  minCandles: 50, // longest indicator this strategy uses needs at least this many to produce a value at all
+  recommendedCandles: 100, // enough for that indicator to be considered "settled" rather than still warming up
   applicableRegime: ["Breakout", "Strong Uptrend", "Strong Downtrend"],
   timeframe: "1h",
   minRR: 2,
@@ -61,6 +63,8 @@ export const trendPullbackCrypto = {
   name: "Trend Pullback",
   description: "Buys/sells pullbacks to EMA20 within an established crypto trend.",
   market: "crypto",
+  minCandles: 70, // longest indicator this strategy uses needs at least this many to produce a value at all
+  recommendedCandles: 150, // enough for that indicator to be considered "settled" rather than still warming up
   applicableRegime: ["Strong Uptrend", "Weak Uptrend", "Strong Downtrend", "Weak Downtrend"],
   timeframe: "1h / 4h context",
   minRR: 2,
@@ -120,6 +124,8 @@ export const compressionExpansion = {
   name: "Volatility Compression → Expansion",
   description: "Trades the first directional expansion candle out of an ATR-compression regime.",
   market: "crypto",
+  minCandles: 50, // longest indicator this strategy uses needs at least this many to produce a value at all
+  recommendedCandles: 100, // enough for that indicator to be considered "settled" rather than still warming up
   applicableRegime: ["Range", "Weak Uptrend", "Weak Downtrend"],
   timeframe: "1h",
   minRR: 2,
@@ -176,6 +182,8 @@ export const vwapReclaimCrypto = {
   name: "VWAP Reclaim",
   description: "Trades a reclaim of session VWAP with volume, 24/7 rolling-window variant.",
   market: "crypto",
+  minCandles: 50, // longest indicator this strategy uses needs at least this many to produce a value at all
+  recommendedCandles: 100, // enough for that indicator to be considered "settled" rather than still warming up
   applicableRegime: ["Range", "Weak Uptrend", "Weak Downtrend", "Strong Uptrend"],
   timeframe: "1h",
   minRR: 1.5,
@@ -218,6 +226,8 @@ export const liquiditySweepCrypto = {
   name: "Liquidity Sweep Reversal",
   description: "Fades a wick-based stop hunt beyond a swing extreme that closes back inside range.",
   market: "crypto",
+  minCandles: 50, // longest indicator this strategy uses needs at least this many to produce a value at all
+  recommendedCandles: 100, // enough for that indicator to be considered "settled" rather than still warming up
   applicableRegime: ["Range", "Weak Uptrend", "Weak Downtrend"],
   timeframe: "1h",
   minRR: 1.5,
@@ -272,6 +282,8 @@ export const emaMomentumCross = {
   name: "EMA 9/20 Momentum Cross",
   description: "Trades a fresh crossover of the fast EMA9 above/below EMA20, confirmed by trend strength (ADX) — a widely used fast-momentum setup that wasn't covered, well suited to crypto's pace.",
   market: "crypto",
+  minCandles: 50, // longest indicator this strategy uses needs at least this many to produce a value at all
+  recommendedCandles: 100, // enough for that indicator to be considered "settled" rather than still warming up
   applicableRegime: ["Strong Uptrend", "Weak Uptrend", "Strong Downtrend", "Weak Downtrend", "Breakout"],
   timeframe: "1h",
   minRR: 2,
@@ -280,13 +292,16 @@ export const emaMomentumCross = {
   stopLogic: "Most recent swing low/high around the cross.",
   targetLogic: "ATR-multiple continuation.",
   invalidations: "EMA9 crosses back through EMA20 against the trade direction.",
-  evaluate(ctx) {
+  // Editable in Settings → Strategy Thresholds.
+  defaultThresholds: { adxMin: 20 },
+  evaluate(ctx, thresholds = this.defaultThresholds) {
     const i = ctx.candles.length - 1;
     const ema9 = ctx.indicators.ema9;
     const ema20 = ctx.indicators.ema20;
     if (i < 1 || ema9[i] === null || ema9[i - 1] === null || ema20[i] === null || ema20[i - 1] === null) return null;
     const adxVal = ctx.indicators.adx14.adx[i];
-    if (adxVal === null || adxVal < 20) return null;
+    const adxMin = thresholds.adxMin ?? 20;
+    if (adxVal === null || adxVal < adxMin) return null;
     const lastC = ctx.candles[i];
     const atrNow = ctx.indicators.atr14[i] ?? lastC.c * 0.01;
 
@@ -306,6 +321,7 @@ export const emaMomentumCross = {
         rationale: `Fast EMA9 crossed above EMA20 with ADX ${adxVal.toFixed(1)} confirming trend strength.`,
         invalidation: `EMA9 crosses back below EMA20.`,
         minRR: this.minRR,
+        measuredValues: { adx: adxVal },
       });
     }
     if (crossedDown) {
@@ -321,6 +337,7 @@ export const emaMomentumCross = {
         rationale: `Fast EMA9 crossed below EMA20 with ADX ${adxVal.toFixed(1)} confirming trend strength.`,
         invalidation: `EMA9 crosses back above EMA20.`,
         minRR: this.minRR,
+        measuredValues: { adx: adxVal },
       });
     }
     return null;

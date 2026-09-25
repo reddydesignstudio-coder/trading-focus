@@ -38,7 +38,7 @@ export function priorRange(candles, bars) {
 }
 
 /** Wraps a raw strategy candidate with common metadata so downstream engines have a uniform shape. */
-export function makeCandidate({ strategyId, direction, entryZoneLow, entryZoneHigh, idealEntry, stopLoss, targetHint, rationale, invalidation, minRR }) {
+export function makeCandidate({ strategyId, direction, entryZoneLow, entryZoneHigh, idealEntry, stopLoss, targetHint, rationale, invalidation, minRR, measuredValues }) {
   return {
     strategyId,
     direction,
@@ -49,5 +49,6 @@ export function makeCandidate({ strategyId, direction, entryZoneLow, entryZoneHi
     rationale,
     invalidation,
     minRR,
+    measuredValues, // the actual raw indicator value(s) this strategy measured — captured for future threshold-tuning suggestions, never used for anything else
   };
 }

@@ -159,6 +159,11 @@ body {
 .mentioned-count { color: var(--text-dim); font-size: 11px; }
 .already-in-watchlist { color: var(--green); font-size: 11px; font-weight: 600; }
 .btn-small { padding: 3px 8px; font-size: 11px; min-height: unset; }
+.threshold-strategy-block { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+.threshold-strategy-name { font-weight: 700; font-size: 13px; margin-bottom: 8px; }
+.threshold-field { margin-bottom: 10px; }
+.threshold-field:last-of-type { margin-bottom: 8px; }
+.threshold-help { font-size: 11px; color: var(--text-dim); margin: 4px 0 0; line-height: 1.4; }
 .news-headline { font-size: 13px; color: var(--text); line-height: 1.4; margin-bottom: 3px; }
 .news-meta { font-size: 11px; color: var(--text-dim); }
 .activity-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
@@ -365,6 +370,18 @@ body {
 .audit-status-pill.audit-none { background: var(--bg-elevated); color: var(--text-dim); }
 .audit-status-pill.audit-issue { background: rgba(217,119,6,0.2); color: var(--amber); }
 .audit-detail { font-size: 13px; color: var(--text-dim); line-height: 1.4; }
+.audit-last-candle { font-size: 11px; color: var(--text-dim); margin: 2px 0 6px; font-variant-numeric: tabular-nums; }
+.candle-requirements { margin: 6px 0; font-size: 12px; }
+.candle-requirements summary { cursor: pointer; color: var(--text-dim); }
+.candle-req-list { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+.candle-req-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.candle-req-counts { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.strategy-guide-list { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
+.strategy-guide-row { padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.strategy-guide-row:last-child { border-bottom: none; padding-bottom: 0; }
+.strategy-guide-name { font-weight: 700; font-size: 13px; margin-bottom: 4px; }
+.strategy-guide-when, .strategy-guide-why { font-size: 12px; color: var(--text-dim); line-height: 1.5; margin: 2px 0; }
+.strategy-guide-when strong, .strategy-guide-why strong { color: var(--text); }
 .audit-reasons { margin: 4px 0 0; padding-left: 16px; font-size: 12.5px; color: var(--text-dim); line-height: 1.4; }
 .audit-reasons li { margin-bottom: 3px; }
 .audit-reasons strong { color: var(--text); }

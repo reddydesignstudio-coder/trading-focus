@@ -45,7 +45,6 @@ test("falls back to the backup Twelve Data key when the primary is rate-limited"
       limit: 50,
       apiKeys: { twelvedata: "primary-key", twelvedataBackup: "backup-key" },
       forceProviderId: "twelvedata",
-      allowDemoFallback: false,
     });
     assert.equal(result.source, "twelvedata");
     assert.equal(result.chainPosition, 1); // 0 = primary key, 1 = backup key — confirms it fell through to the backup
@@ -56,7 +55,7 @@ test("falls back to the backup Twelve Data key when the primary is rate-limited"
   }
 });
 
-test("falls back to demo data when every Twelve Data key is rate-limited", async () => {
+test("returns a clean UNAVAILABLE result (never demo data) when every Twelve Data key is rate-limited", async () => {
   const originalFetch = globalThis.fetch;
   mockFetchSequence([{ status: 429, body: { status: "error", code: 429, message: "rate limit" } }]);
 
@@ -70,10 +69,10 @@ test("falls back to demo data when every Twelve Data key is rate-limited", async
       limit: 50,
       apiKeys: { twelvedata: "primary-key", twelvedataBackup: "backup-key" },
       forceProviderId: "twelvedata",
-      allowDemoFallback: true,
     });
-    assert.equal(result.isDemo, true);
-    assert.equal(result.fallbackReason, "RATE_LIMIT");
+    assert.equal(result.isDemo, false); // never silently substituted — the app never fabricates data on a real failure
+    assert.equal(result.status, "UNAVAILABLE");
+    assert.equal(result.candles.length, 0);
   } finally {
     globalThis.fetch = originalFetch;
   }

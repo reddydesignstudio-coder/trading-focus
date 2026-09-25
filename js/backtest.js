@@ -30,6 +30,7 @@ import { runNoTradeFilters } from "./noTrade.js";
 import { resolveAgainstCandles, computeTradeOutcome } from "./tradeResolution.js";
 import { computePerformance } from "./performance.js";
 import { uid } from "./utils.js";
+import { getEffectiveThresholds } from "./strategyThresholds.js";
 
 const MIN_HISTORY_BARS = 60;
 
@@ -41,7 +42,7 @@ const MIN_HISTORY_BARS = 60;
  * @param splitIndex       Index in `candles` separating in-sample (< splitIndex) from out-of-sample (>= splitIndex).
  * @param tradesPerDayCap  Optional cap mirroring Test Mode limits, for realism.
  */
-export function runBacktest({ candles, strategyIds, market, symbol, riskSettings, splitIndex, minRRoverride }) {
+export function runBacktest({ candles, strategyIds, market, symbol, riskSettings, splitIndex, minRRoverride, settings = {} }) {
   if (!candles || candles.length < MIN_HISTORY_BARS + 5) {
     return { error: "Not enough historical candles supplied for a meaningful backtest (need at least 65 bars)." };
   }
@@ -103,7 +104,7 @@ export function runBacktest({ candles, strategyIds, market, symbol, riskSettings
     for (const strategy of strategies) {
       let candidate;
       try {
-        candidate = strategy.evaluate(ctx);
+        candidate = strategy.evaluate(ctx, getEffectiveThresholds(strategy, settings));
       } catch {
         continue;
       }

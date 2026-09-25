@@ -13,12 +13,13 @@ export function defaultSettings() {
     useDeviceTimeZone: true,
     // twelvedata: primary key. twelvedataBackup: optional second key — if the
     // primary comes back rate-limited (429), the data layer automatically
-    // retries with the backup before falling back to demo data.
+    // retries with the backup, then the other configured providers, before
+    // returning a clean "data unavailable" result — never fake data.
     apiKeys: { twelvedata: "", twelvedataBackup: "", finnhub: "", fmp: "", alphavantage: "" },
-    dataProviderOverride: {}, // e.g. { us_stocks: "demo" } to force demo mode per market
+    dataProviderOverride: {}, // e.g. { us_stocks: "finnhub" } to pin a specific real provider for a market, bypassing the usual chain order
+    strategyThresholds: {}, // per-strategy overrides, keyed by strategy id — see js/strategyThresholds.js. Empty = every strategy uses its own built-in defaults.
     testModeTradesPerDay: 2,
     watchlists: null, // null = use DEFAULT_WATCHLISTS
-    demoModeAcknowledged: false,
   };
 }
 

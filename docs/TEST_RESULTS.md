@@ -3,8 +3,8 @@
 Run with: `npm test` (`node --test tests/*.test.js`), Node v22.
 
 ```
-tests 133 (127 in the main suite + 6 in tests/viewsSmoke.test.js, run separately — see note below)
-pass 133
+tests 158 (152 in the main suite + 6 in tests/viewsSmoke.test.js, run separately — see note below)
+pass 158
 fail 0
 cancelled 0
 skipped 0

@@ -44,17 +44,24 @@ tries them in this order:
   results for the timeframe's TTL (20s–30min depending on timeframe) to stay
   well under any reasonable usage.
 
-## Demo Mode
+## Demo Mode — removed
 
-- **Cost:** Free, offline, no network call at all.
-- Deterministic (seeded) pseudo-random OHLCV data, clearly labeled `DEMO` in
-  every UI surface it touches. Used automatically as a fallback when:
-  - No Twelve Data key is configured (stocks/forex), or
-  - A provider call fails after retries, or
-  - You explicitly force it in Settings.
-- **Demo data can never reach Live Mode paper trading or the real
-  performance/journal numbers** — every demo-derived signal is tagged
-  `isDemo: true` end-to-end, and the app treats that tag as a hard boundary.
+Earlier versions automatically substituted deterministic fake candle data
+whenever a real source failed or no key was configured, clearly labeled
+`DEMO` throughout the UI. **This was removed on request**: seeing
+fabricated data — even clearly labeled — was confusing in practice, and
+it sat in real tension with this app's core promise to never fabricate
+market data. As of this change:
+
+- No API key configured for a market → the app shows **"Data Unavailable"**
+  plainly, for every symbol, rather than substituting anything.
+- Every configured provider failing after retries → same: a clean
+  `UNAVAILABLE` status, never a silent fallback.
+- The underlying demo candle generator (`js/dataProviders/demo.js`) still
+  exists in the codebase, but purely as a fixture for the automated test
+  suite's own deterministic tests — it is only reachable by a caller
+  explicitly passing `forceProviderId: "demo"`, which no part of the real
+  app does. It is never reachable through normal use.
 
 ## Why not [other free API]?
 

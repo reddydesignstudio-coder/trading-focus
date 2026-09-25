@@ -3,6 +3,9 @@ import { el, signalCard, statCard, funnelBar, tradeRow, dataStatusBadge } from "
 import { computeMarketFocus, assessTradingWindow } from "../marketFocus.js";
 import { formatClock, formatCountdownHMS, computeKeySessionCountdowns } from "../timezone.js";
 import { scanMarket, DEFAULT_WATCHLISTS, scanNotableActivity } from "../scanner.js";
+import { downloadScanLog } from "../scanLogger.js";
+import { getStrategyGuide } from "../strategyGuide.js";
+import { getEffectiveThresholds, hasTunableThresholds } from "../strategyThresholds.js";
 import { fetchMarketNews, fetchCompanyNews } from "../newsFeed.js";
 import { getLiveModeStatus, executeTrade, markSignalMissed, saveSignal, TEST_MODE_OPTIONS, LIVE_MODE_LIMIT_OPTIONS, checkAndResolveOpenTrades, resetTradeData } from "../paperTrading.js";
 import { recalculateTrade } from "../risk.js";
@@ -292,6 +295,10 @@ function labelForMarket(m) {
   return { us_stocks: "US Stocks", forex: "Forex", crypto: "Crypto" }[m] || m;
 }
 
+function friendlySourceName(source) {
+  return { twelvedata: "Twelve Data", finnhub: "Finnhub", fmp: "Financial Modeling Prep", alphavantage: "Alpha Vantage", binance: "Binance", demo: "Demo (no real data)" }[source] || source || "unknown";
+}
+
 function hasAnyStockForexKey(apiKeys) {
   return !!(apiKeys.finnhub || apiKeys.twelvedata || apiKeys.twelvedataBackup || apiKeys.fmp || apiKeys.alphavantage);
 }
@@ -305,9 +312,9 @@ function scanLegend() {
   details.appendChild(summary);
   const items = [
     ["Live", "Real, current-as-of-seconds data (currently: Crypto via Binance only)."],
-    ["Delayed", "Real data, but not guaranteed up-to-the-second (currently: Stocks/Forex via Twelve Data)."],
+    ["Delayed", "Real data, but not guaranteed up-to-the-second (Stocks/Forex, via whichever configured provider responded — Twelve Data, Finnhub, FMP, or Alpha Vantage)."],
     ["Stale", "Data came back too old to trust — new signals are blocked until it refreshes."],
-    ["Demo Mode", "No real data source configured — simulated, deterministic fake data so you can try the app."],
+    ["Data Unavailable", "No API key configured, or every configured provider failed to respond. This app never substitutes fake data to fill the gap — add a key in Settings, or try again shortly."],
     ["Qualifying", "This symbol had a setup that passed every filter — it's shown above as a signal card."],
     ["Rejected", "A strategy's entry condition triggered, but it failed a quality/risk check (weak confirmation, poor R:R, etc). This is the app working correctly, not an error — most scans reject far more than they qualify."],
     ["No Setup Detected", "None of the strategies for this market saw a matching pattern on the latest candle right now — nothing to reject, there was just nothing there."],
@@ -324,6 +331,29 @@ function scanLegend() {
     row.appendChild(t);
     row.appendChild(d);
     list.appendChild(row);
+  });
+  details.appendChild(list);
+  return details;
+}
+
+/** Collapsible reference: every strategy applicable to this market, with a general (not signal-specific) plain-English "when it fires and why" — always available, independent of whether anything's currently qualifying. */
+function strategyGuideSection(market) {
+  const details = document.createElement("details");
+  details.className = "scan-legend";
+  const summary = document.createElement("summary");
+  const strategies = strategiesForMarket(market);
+  summary.textContent = `What do these ${strategies.length} strategies actually look for?`;
+  details.appendChild(summary);
+  const list = el("div", { class: "strategy-guide-list" });
+  strategies.forEach((s) => {
+    const guide = getStrategyGuide(s.id);
+    list.appendChild(
+      el("div", { class: "strategy-guide-row" }, [
+        el("div", { class: "strategy-guide-name" }, s.name),
+        el("p", { class: "strategy-guide-when" }, [el("strong", {}, "When: "), guide.when]),
+        el("p", { class: "strategy-guide-why" }, [el("strong", {}, "Why: "), guide.why]),
+      ])
+    );
   });
   details.appendChild(list);
   return details;
@@ -413,26 +443,17 @@ export async function renderScan(root, state) {
   root.appendChild(modeRow);
 
   root.appendChild(scanLegend());
+  root.appendChild(strategyGuideSection(market));
 
-  const isDemoForThisMarket = state.settings.dataProviderOverride?.[market] === "demo" || (market !== "crypto" && !hasAnyStockForexKey(state.settings.apiKeys));
+  const noKeyForThisMarket = market !== "crypto" && !hasAnyStockForexKey(state.settings.apiKeys);
 
-  if (isDemoForThisMarket) {
+  if (noKeyForThisMarket) {
     root.appendChild(
-      el("div", { class: "notice notice-demo" }, [
-        el("strong", {}, "Demo Mode: "),
-        market === "crypto"
-          ? "Demo override enabled in Settings."
-          : "No Twelve Data API key configured — add a free key in Settings to scan real US Stocks/Forex data. Showing deterministic demo data so you can exercise the full workflow.",
+      el("div", { class: "notice notice-error" }, [
+        el("strong", {}, "No API key configured for this market. "),
+        "Scanning will show \"Data Unavailable\" for every symbol until you add a free key in Settings — this app never substitutes fake data to fill the gap.",
       ])
     );
-    if (state.tradeMode === "live") {
-      root.appendChild(
-        el("div", { class: "notice notice-error" }, [
-          el("strong", {}, "Live Mode is selected, but this market is on Demo data. "),
-          "Live Mode trades can only be executed against real data — the PAPER TRADE button will be disabled on any signal below until you add an API key or switch to Test Mode.",
-        ])
-      );
-    }
   }
 
   const scanBtn = el("button", { class: "btn btn-primary btn-large", onclick: () => runScan() }, "Check for Trade");
@@ -459,6 +480,7 @@ export async function renderScan(root, state) {
         riskSettings: state.settings.risk,
         apiKeys: state.settings.apiKeys,
         forceProviderId,
+        settings: state.settings,
       });
 
       for (const perSymbol of result.perSymbol) {
@@ -507,6 +529,18 @@ export async function renderScan(root, state) {
 
       resultsWrap.appendChild(el("div", { class: "section-title" }, `Symbols Scanned (${result.perSymbol.length})`));
       resultsWrap.appendChild(symbolsScannedTable(result.perSymbol));
+
+      if (result.log) {
+        const { errorCount, symbolsWithErrors } = result.log.errorSummary();
+        resultsWrap.appendChild(
+          el("button", { class: "btn", onclick: () => downloadScanLog(result.log, `scan-log-${market}-${Date.now()}.txt`) },
+            errorCount ? `⬇ Download Scan Log (${errorCount} error${errorCount === 1 ? "" : "s"} logged)` : "⬇ Download Scan Log"
+          )
+        );
+        if (errorCount) {
+          resultsWrap.appendChild(el("p", { class: "focus-reason" }, `${symbolsWithErrors.join(", ")} hit an unexpected error and were skipped — every other symbol still scanned normally. Download the log above for the exact detail if you want to report it.`));
+        }
+      }
     } catch (e) {
       console.error("Scan failed:", e); // full detail in the browser console for diagnosis — the on-screen message stays plain-English
       resultsWrap.innerHTML = "";
@@ -534,6 +568,31 @@ function symbolsScannedTable(perSymbolResults) {
       dataStatusBadge(r.isDemo ? "DEMO" : r.dataStatus),
     ]);
     row.appendChild(header);
+    row.appendChild(
+      el("p", { class: "audit-last-candle" }, `Last candle: ${r.lastCandleTime ? new Date(r.lastCandleTime).toLocaleString() : "unavailable"} · Source: ${friendlySourceName(r.source)}`)
+    );
+
+    if (r.strategyDataQuality && r.strategyDataQuality.length) {
+      const details = document.createElement("details");
+      details.className = "candle-requirements";
+      const summary = document.createElement("summary");
+      const disabledCount = r.strategyDataQuality.filter((s) => s.status === "DISABLED").length;
+      summary.textContent = disabledCount ? `Candle requirements (${disabledCount} strategy disabled — not enough history)` : "Candle requirements";
+      details.appendChild(summary);
+      const list = el("div", { class: "candle-req-list" });
+      r.strategyDataQuality.forEach((s) => {
+        const statusClass = s.status === "DISABLED" ? "audit-issue" : s.status === "LIMITED" ? "audit-rejected" : "audit-qualifying";
+        list.appendChild(
+          el("div", { class: "candle-req-row" }, [
+            el("span", {}, s.strategyName),
+            el("span", { class: `audit-status-pill ${statusClass}` }, s.status),
+            el("span", { class: "candle-req-counts" }, `required ${s.required}${s.recommended !== s.required ? ` (recommended ${s.recommended})` : ""} — fetched ${s.fetched}`),
+          ])
+        );
+      });
+      details.appendChild(list);
+      row.appendChild(details);
+    }
 
     if (r.error) {
       row.appendChild(el("p", { class: "audit-detail" }, r.error));
@@ -1207,7 +1266,7 @@ export async function renderBacktest(root, state) {
           done += 1;
           runBtn.textContent = `Running… (${done}/${combos.length})`;
           if (!data.candles || data.candles.length < 65) return { market, symbol, error: "Not enough historical candles for this symbol/timeframe." };
-          const result = runBacktest({ candles: data.candles, strategyIds, market, symbol, riskSettings: state.settings.risk });
+          const result = runBacktest({ candles: data.candles, strategyIds, market, symbol, riskSettings: state.settings.risk, settings: state.settings });
           if (result.error) return { market, symbol, error: result.error };
           return { market, symbol, isDemo: !!data.isDemo, dataStatus: data.status, result };
         } catch (e) {
@@ -1566,6 +1625,18 @@ export async function renderSettings(root, state) {
   root.appendChild(watchlistContainer);
   renderWatchlistSection(watchlistContainer, state);
 
+  root.appendChild(el("div", { class: "section-title" }, "Strategy Thresholds"));
+  root.appendChild(
+    el(
+      "p",
+      { class: "focus-reason" },
+      "Only the strategies with tunable parameters wired up so far are listed here (more are being converted over time — everything else still uses its built-in default). Changing a value here changes what that strategy looks for on your very next scan or backtest. This app doesn't auto-tune these for you — it's your call, based on what you see in Strategy Lab."
+    )
+  );
+  const thresholdsContainer = el("div", {});
+  root.appendChild(thresholdsContainer);
+  renderStrategyThresholdsSection(thresholdsContainer, state);
+
   root.appendChild(el("div", { class: "section-title" }, "Live Mode Trades/Day"));
   root.appendChild(
     el("p", { class: "focus-reason" }, "The original design locks Live Mode to 1 completed trade/day as a trading-discipline guardrail. You can raise it here if you'd rather — the limit is still hard-enforced, just against whichever number you pick.")
@@ -1719,6 +1790,61 @@ function openResetTradeDataModal(state) {
   modal.body.appendChild(error);
   modal.body.appendChild(btn);
   document.body.appendChild(modal.overlay);
+}
+
+// Human-readable label + short explanation for each raw threshold key —
+// so Settings shows "Minimum RVOL (volume vs. 20-bar average)" instead
+// of the internal field name "rvolMin".
+const THRESHOLD_LABELS = {
+  rvolMin: { label: "Minimum RVOL", help: "How many times above the 20-bar average volume the breakout candle needs. Higher = fewer, more volume-confirmed signals." },
+  emaProximity: { label: "EMA20 Proximity", help: "How close price must be to EMA20 (as a fraction of price) to count as \"at\" the pullback level. Smaller = stricter." },
+  rsiLongMin: { label: "RSI Floor (longs)", help: "RSI must be above this for a long pullback signal." },
+  rsiLongMax: { label: "RSI Ceiling (longs)", help: "RSI must be below this for a long pullback signal." },
+  rsiShortMin: { label: "RSI Floor (shorts)", help: "RSI must be above this for a short pullback signal." },
+  rsiShortMax: { label: "RSI Ceiling (shorts)", help: "RSI must be below this for a short pullback signal." },
+  adxMin: { label: "Minimum ADX", help: "How strong the trend must be (via ADX) for the crossover to count. Higher = fewer signals in choppy markets." },
+};
+
+async function renderStrategyThresholdsSection(container, state) {
+  container.innerHTML = "";
+  const tunable = ALL_STRATEGIES.filter(hasTunableThresholds);
+  if (!tunable.length) {
+    container.appendChild(el("p", { class: "empty-state" }, "No strategies have tunable thresholds wired up yet."));
+    return;
+  }
+  tunable.forEach((strategy) => {
+    const effective = getEffectiveThresholds(strategy, state.settings);
+    const wrap = el("div", { class: "threshold-strategy-block" });
+    wrap.appendChild(el("div", { class: "threshold-strategy-name" }, strategy.name));
+    Object.keys(strategy.defaultThresholds).forEach((key) => {
+      const meta = THRESHOLD_LABELS[key] || { label: key, help: "" };
+      const row = el("div", { class: "threshold-field" });
+      row.appendChild(el("label", { class: "field-label" }, meta.label));
+      const input = el("input", { class: "input", type: "number", step: "any", value: effective[key] });
+      input.addEventListener("change", (e) => {
+        const v = parseFloat(e.target.value);
+        if (Number.isNaN(v)) return;
+        if (!state.settings.strategyThresholds) state.settings.strategyThresholds = {};
+        if (!state.settings.strategyThresholds[strategy.id]) state.settings.strategyThresholds[strategy.id] = {};
+        state.settings.strategyThresholds[strategy.id][key] = v;
+        state.persistSettings();
+      });
+      row.appendChild(input);
+      if (meta.help) row.appendChild(el("p", { class: "threshold-help" }, meta.help));
+      wrap.appendChild(row);
+    });
+    const hasOverride = state.settings.strategyThresholds?.[strategy.id] && Object.keys(state.settings.strategyThresholds[strategy.id]).length;
+    if (hasOverride) {
+      wrap.appendChild(
+        el("button", { class: "btn btn-small", onclick: async () => {
+          delete state.settings.strategyThresholds[strategy.id];
+          await state.persistSettings();
+          renderStrategyThresholdsSection(container, state);
+        } }, "Reset to defaults")
+      );
+    }
+    container.appendChild(wrap);
+  });
 }
 
 function numberField(label, value, onChange) {

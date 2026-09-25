@@ -17,15 +17,22 @@
 //   - explicit stale-data detection (never silently relabels stale as live)
 //   - a multi-provider FALLBACK CHAIN for stocks/forex: if one configured
 //     provider is rate-limited or erroring, the next configured one is
-//     tried automatically before ever falling back to demo data.
+//     tried automatically. If every configured provider fails, the result
+//     is a clean UNAVAILABLE status — never a silent substitution of fake
+//     data. That automatic demo-data fallback existed early on and was
+//     removed on request: seeing fabricated candles without asking for
+//     them is confusing, and it was always in tension with this app's
+//     core promise to never fabricate data. Demo data still exists as a
+//     file (dataProviders/demo.js) purely for the automated test suite's
+//     own deterministic fixtures — nothing in the real app ever reaches it.
 //
 // HONEST NOTE on "real-time preference": every one of these free-tier
 // providers (Twelve Data, Finnhub, FMP, Alpha Vantage) delivers DELAYED
 // data on its free tier — genuine real-time market data is a paid
 // feature industry-wide, not something any free API key unlocks. Adding
-// more of them doesn't make data faster; it adds redundancy, so the app
-// falls back to demo data far less often. Crypto (Binance) remains the
-// only genuinely real-time, free source in this app.
+// more of them doesn't make data faster; it adds redundancy, so a real
+// scan is more likely to succeed rather than come back UNAVAILABLE.
+// Crypto (Binance) remains the only genuinely real-time, free source.
 
 import { demoProvider } from "./demo.js";
 import { binanceProvider } from "./binance.js";
@@ -34,6 +41,7 @@ import { finnhubProvider } from "./finnhub.js";
 import { fmpProvider } from "./fmp.js";
 import { alphaVantageProvider } from "./alphaVantage.js";
 import { ProviderError } from "./binance.js";
+import { assessFreshness, mergeAndStoreCandles, getCachedCandles, getCachedRecord, DEFAULT_MAX_CANDLES, MINIMUM_CANDLES_FOR_READY } from "../candleCache.js";
 
 const PROVIDERS = {
   demo: demoProvider,
@@ -246,13 +254,26 @@ async function callStockForexChain({ symbol, market, timeframe, limit, apiKeys, 
 }
 
 /**
- * Main entry point. Options:
- *   symbol, market, timeframe, limit, forceProviderId,
- *   apiKeys ({twelvedata, twelvedataBackup, finnhub, fmp, alphavantage}),
- *   allowDemoFallback (bool), signal (AbortSignal)
+ * The original live-fetch entry point (chain/retry/timeout/in-memory-TTL
+ * cache logic, all unchanged). Not exported directly anymore — the
+ * public getMarketData below wraps this with the persistent-cache layer.
+ * Options: symbol, market, timeframe, limit, forceProviderId, apiKeys
+ * ({twelvedata, twelvedataBackup, finnhub, fmp, alphavantage}), signal
+ * (AbortSignal).
+ *
+ * IMPORTANT: this never silently substitutes demo data when a real
+ * source fails — that automatic fallback was removed on request,
+ * because seeing fabricated data without asking for it is confusing
+ * and sits in real tension with this app's core "never fabricate data"
+ * principle. A genuine failure now returns a clean UNAVAILABLE result;
+ * the UI is responsible for showing that honestly. Demo data still
+ * exists as a file (dataProviders/demo.js) purely so the automated test
+ * suite can generate deterministic candles without real network calls —
+ * it is only ever reachable by a caller explicitly passing
+ * forceProviderId: "demo", which no part of the actual app does.
  */
-export async function getMarketData(opts) {
-  const { symbol, market, timeframe, limit = 200, forceProviderId, apiKeys = {}, allowDemoFallback = true, signal } = opts;
+async function getMarketDataInternal(opts) {
+  const { symbol, market, timeframe, limit = 200, forceProviderId, apiKeys = {}, signal } = opts;
   const isStockForexMarket = market === "us_stocks" || market === "forex";
   // "demo" as a forced provider always bypasses the chain entirely. Forcing
   // any OTHER specific provider (e.g. a test forcing "twelvedata") still
@@ -279,20 +300,12 @@ export async function getMarketData(opts) {
   const promise = (async () => {
     if (usesChain) {
       const result = await callStockForexChain({ symbol, market, timeframe, limit, apiKeys, signal, restrictToProviderId });
-      if (result.status === "UNAVAILABLE" && allowDemoFallback) {
-        const demo = await demoProvider.getCandles({ symbol, market, timeframe, limit });
-        return { ...demo, fallbackReason: result.reason || "PROVIDER_UNAVAILABLE" };
-      }
       cache.set(key, { data: result, fetchedAt: Date.now() });
       return result;
     }
 
-    // Non-chained path: crypto (Binance) or an explicit "demo" override.
+    // Non-chained path: crypto (Binance) or an explicit "demo" override (tests only — never reached by the app itself).
     const result = await callProviderWithRetry({ providerId, apiKey: undefined, symbol, market, timeframe, limit, signal });
-    if (result.status === "UNAVAILABLE" && allowDemoFallback && providerId !== "demo") {
-      const demo = await demoProvider.getCandles({ symbol, market, timeframe, limit });
-      return { ...demo, fallbackReason: result.reason || "PROVIDER_UNAVAILABLE" };
-    }
     cache.set(key, { data: result, fetchedAt: Date.now() });
     return result;
   })();
@@ -322,14 +335,75 @@ export async function searchSymbols(market, query, apiKeys = {}) {
         /* try the next provider in the chain */
       }
     }
-    return demoProvider.searchSymbols(query, market);
+    return []; // no configured provider could search — an empty result, not a fabricated one
   }
-  const providerId = DEFAULT_PROVIDER_FOR_MARKET[market] || "demo";
+  const providerId = DEFAULT_PROVIDER_FOR_MARKET[market];
   try {
     return await PROVIDERS[providerId].searchSymbols(query, market);
   } catch {
-    return demoProvider.searchSymbols(query, market);
+    return [];
   }
 }
 
 export { PROVIDERS, buildStockForexChain };
+
+/**
+ * Public entry point. Adds a LAZY, on-scan persistent-cache layer on top
+ * of the unchanged live-fetch logic above: before touching the network,
+ * check whether IndexedDB already has fresh-enough candles (readiness is
+ * assessed the same way a proactive/scheduled system would, just
+ * triggered by an actual call instead of a clock). If so, serve from
+ * disk — zero network calls, works across page reloads, unlike the old
+ * in-memory-only cache. If not, fall through to the real fetch exactly
+ * as before, then merge the result into the persistent store so the
+ * NEXT call — even after a reload — has a longer, more complete history
+ * to work with, not just whatever the last `limit` happened to be.
+ *
+ * Demo data is never persisted (it's synthetic and would corrupt a real
+ * cache). Pass `forceRefresh: true` to skip the cache check entirely
+ * (e.g. a person explicitly asking for the very latest read).
+ */
+export async function getMarketData(opts) {
+  const { symbol, market, timeframe, limit = 200, forceRefresh = false, forceProviderId } = opts;
+  const usePersistentCache = !forceRefresh && forceProviderId !== "demo";
+
+  if (usePersistentCache) {
+    try {
+      const freshness = await assessFreshness(symbol, market, timeframe, Math.min(limit, MINIMUM_CANDLES_FOR_READY));
+      if (freshness.status === "READY") {
+        const record = await getCachedRecord(symbol, market, timeframe);
+        if (record?.candles?.length) {
+          return {
+            candles: record.candles,
+            status: record.dataStatus || "DELAYED",
+            isDemo: false,
+            asOf: new Date(record.lastUpdated),
+            source: record.source,
+            symbol,
+            market,
+            timeframe,
+            fromPersistentCache: true,
+          };
+        }
+      }
+    } catch (e) {
+      console.warn("Persistent candle cache read failed, falling through to live fetch:", e.message);
+    }
+  }
+
+  const result = await getMarketDataInternal(opts);
+
+  if (usePersistentCache && !result.isDemo && result.candles?.length) {
+    try {
+      await mergeAndStoreCandles(symbol, market, timeframe, result.candles, DEFAULT_MAX_CANDLES, { dataStatus: result.status, source: result.source });
+      const merged = await getCachedCandles(symbol, market, timeframe);
+      if (merged.length > result.candles.length) {
+        return { ...result, candles: merged }; // hand back the longer, accumulated history, not just this fetch's slice
+      }
+    } catch (e) {
+      console.warn("Persistent candle cache write failed (live result still returned normally):", e.message);
+    }
+  }
+
+  return result;
+}
